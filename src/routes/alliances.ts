@@ -107,4 +107,64 @@ export async function alliancesRoutes(fastify: FastifyInstance): Promise<void> {
 
     return reply.send(brandingFilter({ alliance, members: members ?? [] }));
   });
+
+  // GET /alliances/standings
+  // Cross-alliance leaderboard. Computes mean(play_points) per alliance from
+  // its members and returns rows sorted descending. Used by AlliancesScreen
+  // to replace the local MOCK_LEAGUE_ALLIANCES placeholder.
+  fastify.get('/alliances/standings', { preHandler: requireAuth }, async (_req, reply) => {
+    const { data: alliances, error: allianceErr } = await supabase
+      .from('alliances')
+      .select('id, name');
+
+    if (allianceErr) return reply.code(500).send({ error: allianceErr.message });
+
+    const { data: profiles, error: profErr } = await supabase
+      .from('profiles')
+      .select('alliance_id, play_points')
+      .not('alliance_id', 'is', null);
+
+    if (profErr) return reply.code(500).send({ error: profErr.message });
+
+    type Agg = { sum: number; count: number };
+    const grouped = new Map<string, Agg>();
+    for (const p of (profiles ?? []) as Array<Record<string, unknown>>) {
+      const id = p['alliance_id'] as string | null;
+      if (!id) continue;
+      const cur = grouped.get(id) ?? { sum: 0, count: 0 };
+      cur.sum += (p['play_points'] as number | null) ?? 0;
+      cur.count += 1;
+      grouped.set(id, cur);
+    }
+
+    const standings = ((alliances ?? []) as Array<Record<string, unknown>>)
+      .map((a) => {
+        const g = grouped.get(a['id'] as string) ?? { sum: 0, count: 0 };
+        return {
+          allianceId: a['id'] as string,
+          name: a['name'] as string,
+          meanScore: g.count ? Math.round(g.sum / g.count) : 0,
+          memberCount: g.count,
+        };
+      })
+      .sort((x, y) => y.meanScore - x.meanScore);
+
+    return reply.send(brandingFilter({ standings }));
+  });
+
+  // DELETE /alliances/leave
+  // Removes the caller from their current alliance by nulling alliance_id on
+  // their profile. Idempotent — silently succeeds if the user isn't in one.
+  fastify.delete('/alliances/leave', { preHandler: requireAuth }, async (req, reply) => {
+    const { profileId } = req as AuthenticatedRequest;
+
+    const { error } = await supabase
+      .from('profiles')
+      .update({ alliance_id: null })
+      .eq('id', profileId);
+
+    if (error) return reply.code(500).send({ error: error.message });
+
+    return reply.send(brandingFilter({ left: true }));
+  });
 }
