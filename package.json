@@ -1,0 +1,16 @@
+{
+  "name": "playgm",
+  "version": "1.0.0",
+  "description": "Sports player stats manager with daily refresh from thesportsdb",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "refresh": "node src/jobs/morningRefresh.js"
+  },
+  "dependencies": {
+    "better-sqlite3": "^9.6.0",
+    "dotenv": "^16.4.5",
+    "node-cron": "^3.0.3",
+    "node-fetch": "^2.7.0"
+  }
+}
