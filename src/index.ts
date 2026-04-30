@@ -7,6 +7,7 @@ import { startMorningReveal } from './services/morningReveal.js';
 import { startLiveScoreSync } from './services/liveScoreSync.js';
 import { profileRoutes } from './routes/profile.js';
 import { cardsRoutes } from './routes/cards.js';
+import { cardScanRoutes } from './routes/cardScan.js';
 import { draftRoutes } from './routes/draft.js';
 import { scoutingReportRoutes } from './routes/scoutingReport.js';
 import { triviaRoutes } from './routes/trivia.js';
@@ -60,6 +61,7 @@ server.get('/health', async () => {
 
 await server.register(profileRoutes, { prefix: '/' });
 await server.register(cardsRoutes, { prefix: '/' });
+await server.register(cardScanRoutes, { prefix: '/' });
 await server.register(draftRoutes, { prefix: '/' });
 await server.register(scoutingReportRoutes, { prefix: '/' });
 await server.register(triviaRoutes, { prefix: '/' });
