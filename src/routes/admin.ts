@@ -403,7 +403,15 @@ const DASHBOARD_HTML = /* html */ `<!doctype html>
     <a href="/admin/edit/cards"   style="color: var(--accent); text-decoration: none; margin: 0 4px;">Card templates</a>·
     <a href="/admin/edit/trivia"  style="color: var(--accent); text-decoration: none; margin: 0 4px;">Trivia</a>·
     <a href="/admin/edit/advertising" style="color: var(--accent); text-decoration: none; margin: 0 4px;">Advertising</a>·
-    <a href="/admin/edit/safety" style="color: var(--accent); text-decoration: none; margin: 0 4px;">Safety matrix</a>
+    <a href="/admin/edit/safety" style="color: var(--accent); text-decoration: none; margin: 0 4px;">Safety matrix</a>·
+    <a href="/admin/edit/packs" style="color: var(--accent); text-decoration: none; margin: 0 4px;">Packs</a>·
+    <a href="/admin/edit/earn-rates" style="color: var(--accent); text-decoration: none; margin: 0 4px;">Earn rates</a>·
+    <a href="/admin/edit/subscriptions" style="color: var(--accent); text-decoration: none; margin: 0 4px;">Subscriptions</a>·
+    <a href="/admin/edit/streaks" style="color: var(--accent); text-decoration: none; margin: 0 4px;">Streaks</a>·
+    <a href="/admin/edit/triggers" style="color: var(--accent); text-decoration: none; margin: 0 4px;">Triggers</a>·
+    <a href="/admin/edit/stat-resolution" style="color: var(--accent); text-decoration: none; margin: 0 4px;">Stat resolution</a>·
+    <a href="/admin/edit/pity" style="color: var(--accent); text-decoration: none; margin: 0 4px;">Pity</a>·
+    <a href="/admin/edit/progression" style="color: var(--accent); text-decoration: none; margin: 0 4px;">Progression</a>
   </nav>
 
   <div id="error"></div>
