@@ -394,4 +394,41 @@ COMMENT ON TABLE subscription_events IS 'Tier upgrade/downgrade audit. Drives su
 COMMENT ON VIEW  user_pp_totals      IS 'Per-user PP rollup. Sums bonus_amount (the canonical signed delta).';
 COMMENT ON VIEW  signup_cohorts      IS 'Daily signup cohort counts from auth.users. Drives d1/d7/d30 retention math.';
 
+-- ============================================================================
+-- SECTION 7: Live data ingestion + ratings (NOT YET APPLIED)
+-- ============================================================================
+-- These tables back the 5-league stats pipeline + per-player tier rating.
+-- The runtime currently reads from the JSON caches in assets/stat-cache and
+-- the JSON tier files in assets/stat-tiers — no DB roundtrip on the hot path.
+-- After apply, the refresh job dual-writes JSON + DB. See DATA_ARCHITECTURE.md
+-- "Live ingestion + ratings" section.
+
+CREATE TABLE IF NOT EXISTS player_stats (
+  player_id   TEXT          NOT NULL,           -- 'espn:12345' style external_id
+  sport       TEXT          NOT NULL,           -- nfl/nba/mlb/nhl/mls
+  season      TEXT          NOT NULL,           -- '2025', '2025-26', '2026'
+  stats_json  JSONB         NOT NULL,
+  fetched_at  TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (player_id, sport, season)
+);
+
+CREATE INDEX IF NOT EXISTS idx_player_stats_sport_season
+  ON player_stats (sport, season);
+
+CREATE TABLE IF NOT EXISTS player_ratings (
+  player_id        TEXT          NOT NULL,
+  sport            TEXT          NOT NULL,
+  season           TEXT          NOT NULL,
+  overall_tier     TEXT          NOT NULL CHECK (overall_tier IN ('elite','strong','solid','role','deep_bench')),
+  breakdowns_json  JSONB         NOT NULL,
+  computed_at      TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (player_id, sport, season)
+);
+
+CREATE INDEX IF NOT EXISTS idx_player_ratings_sport_tier
+  ON player_ratings (sport, overall_tier);
+
+COMMENT ON TABLE player_stats     IS 'Per-player season stats keyed by (player_id, sport, season). Source: jobs/refreshStats.ts.';
+COMMENT ON TABLE player_ratings   IS 'Per-player tier rating (elite/strong/solid/role/deep_bench) computed from player_stats.';
+
 COMMIT;
