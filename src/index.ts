@@ -25,6 +25,8 @@ import { leaderboardRoutes } from './routes/leaderboard.js';
 import { scoutVoiceRoutes } from './routes/scoutVoice.js';
 import { adminRoutes, installRouteTracker } from './routes/admin.js';
 import { adminEditRoutes } from './routes/adminEdit.js';
+import { adminEditConfigRoutes } from './routes/adminEditConfig.js';
+import { runtimeConfigRoutes } from './routes/runtimeConfig.js';
 import { playersRoutes } from './routes/players.js';
 import { startStatsRefreshJobs } from './jobs/refreshStats.js';
 
@@ -87,6 +89,8 @@ await server.register(leaderboardRoutes, { prefix: '/' });
 await server.register(scoutVoiceRoutes, { prefix: '/' });
 await server.register(adminRoutes, { prefix: '/' });
 await server.register(adminEditRoutes, { prefix: '/' });
+await server.register(adminEditConfigRoutes, { prefix: '/' });
+await server.register(runtimeConfigRoutes, { prefix: '/' });
 await server.register(playersRoutes, { prefix: '/' });
 
 // ─── Start ───────────────────────────────────────────────────────────────────
