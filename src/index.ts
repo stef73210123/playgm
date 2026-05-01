@@ -24,6 +24,7 @@ import { practiceDraftRoutes } from './routes/practiceDrafts.js';
 import { leaderboardRoutes } from './routes/leaderboard.js';
 import { scoutVoiceRoutes } from './routes/scoutVoice.js';
 import { adminRoutes, installRouteTracker } from './routes/admin.js';
+import { adminEditRoutes } from './routes/adminEdit.js';
 
 const PORT = Number(process.env.PORT ?? 3001);
 const HOST = '0.0.0.0';
@@ -83,6 +84,7 @@ await server.register(practiceDraftRoutes, { prefix: '/' });
 await server.register(leaderboardRoutes, { prefix: '/' });
 await server.register(scoutVoiceRoutes, { prefix: '/' });
 await server.register(adminRoutes, { prefix: '/' });
+await server.register(adminEditRoutes, { prefix: '/' });
 
 // ─── Start ───────────────────────────────────────────────────────────────────
 
