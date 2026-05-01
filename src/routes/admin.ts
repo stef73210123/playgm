@@ -33,6 +33,10 @@ import { getEconomicMetrics } from '../services/economicMetrics.js';
 import { getEconomicTargets } from '../services/economicTargets.js';
 import { getAdvertisingReport } from '../services/advertising.js';
 import { getDataPipelinesStatus } from '../jobs/refreshStats.js';
+import {
+  getSafetyMatrixSummary,
+  loadSafetyMatrix,
+} from '../services/safetyMatrix.js';
 
 function findProjectRoot(): string {
   const cwd = process.cwd();
@@ -97,6 +101,8 @@ const ROUTE_PURPOSES: Record<string, string> = {
   'GET /admin/api/economic-metrics': 'Live economic metrics (PP, packs, cards, subs, retention)',
   'GET /admin/edit/advertising': 'Advertising actuals editor',
   'GET /admin/api/advertising': 'Advertising report (all channels)',
+  'GET /admin/edit/safety': 'Per-age safety/feature matrix editor',
+  'GET /admin/api/safety-matrix': 'Per-age safety/feature matrix (full)',
 };
 
 function pickPurpose(method: string, urlPath: string): string {
@@ -166,6 +172,13 @@ export async function adminRoutes(fastify: FastifyInstance): Promise<void> {
     ]);
     const economicTargets = getEconomicTargets();
     const advertising = getAdvertisingReport();
+    let safetyMatrixSummary: ReturnType<typeof getSafetyMatrixSummary> | null;
+    try {
+      safetyMatrixSummary = getSafetyMatrixSummary();
+    } catch {
+      // Tolerate a missing/broken matrix file — same posture as other probes.
+      safetyMatrixSummary = null;
+    }
 
     const corpus = await getDataCorpus({ scoutVoiceLinesCount: scoutVoice.count });
     const lastUpdated = await getLastUpdated({ scoutVoiceDbLatest: scoutVoice.latest });
@@ -241,8 +254,22 @@ export async function adminRoutes(fastify: FastifyInstance): Promise<void> {
       economic_metrics: economicMetrics,
       economic_targets: economicTargets,
       advertising,
+      safety_matrix: safetyMatrixSummary,
       data_pipelines: getDataPipelinesStatus(),
     };
+  });
+
+  fastify.get('/admin/api/safety-matrix', async (_req, reply) => {
+    try {
+      const file = loadSafetyMatrix();
+      return { ok: true, ...file };
+    } catch (err) {
+      reply.code(500).send({
+        ok: false,
+        error: err instanceof Error ? err.message : 'failed to load safety matrix',
+      });
+      return reply;
+    }
   });
 
   fastify.get('/admin/api/advertising', async () => {
@@ -387,7 +414,8 @@ const DASHBOARD_HTML = /* html */ `<!doctype html>
     <a href="/admin/edit/teams"   style="color: var(--accent); text-decoration: none; margin: 0 4px;">Teams</a>·
     <a href="/admin/edit/cards"   style="color: var(--accent); text-decoration: none; margin: 0 4px;">Card templates</a>·
     <a href="/admin/edit/trivia"  style="color: var(--accent); text-decoration: none; margin: 0 4px;">Trivia</a>·
-    <a href="/admin/edit/advertising" style="color: var(--accent); text-decoration: none; margin: 0 4px;">Advertising</a>
+    <a href="/admin/edit/advertising" style="color: var(--accent); text-decoration: none; margin: 0 4px;">Advertising</a>·
+    <a href="/admin/edit/safety" style="color: var(--accent); text-decoration: none; margin: 0 4px;">Safety matrix</a>
   </nav>
 
   <div id="error"></div>
@@ -465,6 +493,12 @@ const DASHBOARD_HTML = /* html */ `<!doctype html>
   <div class="card" id="ad-channels-card">
     <h2>Channels</h2>
     <div id="ad-channels-body">Loading…</div>
+  </div>
+
+  <h2 style="margin: 28px 0 12px; font-size: 16px; letter-spacing: 0.4px; color: var(--accent); text-transform: uppercase;">Safety Matrix</h2>
+  <div class="card" id="safety-matrix-card">
+    <h2>Per-Age Feature &amp; Settings Matrix</h2>
+    <div id="safety-matrix-body">Loading…</div>
   </div>
 
   <h2 style="margin: 28px 0 12px; font-size: 16px; letter-spacing: 0.4px; color: var(--accent); text-transform: uppercase;">Data Pipelines</h2>
@@ -670,6 +704,9 @@ const DASHBOARD_HTML = /* html */ `<!doctype html>
 
     // ─── Advertising ─────────────────────────────────────────────────────
     renderAdvertising(s.advertising || {});
+
+    // ─── Safety Matrix ───────────────────────────────────────────────────
+    renderSafetyMatrix(s.safety_matrix);
 
     // ─── Data Pipelines (live ingestion) ─────────────────────────────────
     renderDataPipelines(s.data_pipelines || {});
@@ -1051,6 +1088,30 @@ const DASHBOARD_HTML = /* html */ `<!doctype html>
           \${c.last_updated_iso ? '<div class="muted" style="margin-top:6px;">last update: ' + esc(relTime(c.last_updated_iso)) + '</div>' : '<div class="muted" style="margin-top:6px;">last update: —</div>'}
         </div>\`;
       }).join('') + '</div>';
+  }
+
+  function renderSafetyMatrix(sm) {
+    if (!sm) {
+      el('safety-matrix-body').innerHTML = '<span class="tag unmeasured">unmeasured · matrix file missing</span>';
+      return;
+    }
+    el('safety-matrix-body').innerHTML = \`
+      <div class="tile-grid">
+        \${tileHtml('total features', sm.feature_count, 'in matrix')}
+        \${tileHtml('ages covered', sm.ages_covered, 'within 5–14')}
+        \${tileHtml('COPPA-gated', sm.coppa_gated_features, 'parent-consent <13')}
+        \${tileHtml('Apple-Kids-blocked', sm.apple_kids_blocked_features, 'no override <13')}
+      </div>
+      <div class="kv" style="margin-top:10px;">
+        <span class="k">version</span><span><code>\${esc(sm.version)}</code></span>
+      </div>
+      <div class="kv">
+        <span class="k">last edited</span><span>\${esc(relTime(sm.last_updated_iso))} · <code>\${esc(new Date(sm.last_updated_iso).toLocaleString())}</code></span>
+      </div>
+      <div style="margin-top:8px;">
+        <a href="/admin/edit/safety" style="color: var(--accent); text-decoration: none;">→ Open editor</a>
+      </div>
+    \`;
   }
 
   function renderDataPipelines(p) {
