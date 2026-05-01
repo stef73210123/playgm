@@ -4,6 +4,7 @@ import { supabase } from '../db/client.js';
 import { brandingFilter } from '../services/branding.js';
 import { generateHandle } from '../utils/handleGenerator.js';
 import { requireAuth, type AuthenticatedRequest } from '../middleware/auth.js';
+import { resolveFeaturesForUser } from '../services/safetyResolver.js';
 
 const INITIAL_FREE_CARDS = 3;
 
@@ -19,6 +20,24 @@ export async function profileRoutes(fastify: FastifyInstance): Promise<void> {
 
     if (error) return reply.code(500).send({ error: error.message });
     return reply.send(brandingFilter(data));
+  });
+
+  // GET /me/features
+  // Effective per-user feature set — age-based safety matrix layered with
+  // any per-user overrides from the dashboard. Cached 5 min per user
+  // inside safetyResolver; override writes invalidate. The client uses
+  // this as the single source of truth for what to render.
+  fastify.get('/me/features', { preHandler: requireAuth }, async (req, reply) => {
+    const { profileId } = req as AuthenticatedRequest;
+    try {
+      const set = await resolveFeaturesForUser(profileId);
+      return reply.send({ ok: true, ...set });
+    } catch (err) {
+      return reply.code(500).send({
+        ok: false,
+        error: err instanceof Error ? err.message : 'failed to resolve features',
+      });
+    }
   });
 
   // POST /profile/bootstrap
