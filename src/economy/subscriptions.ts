@@ -48,6 +48,16 @@ export function getInventoryCap(tierId: SubscriptionTierId): number {
   return cap < 0 ? Number.POSITIVE_INFINITY : cap;
 }
 
+/**
+ * Maximum Ask Scout LLM questions per UTC day. -1 sentinel → Infinity.
+ * Used by server/src/services/askScoutLimiter.ts to gate /scout/ask before
+ * the call hits Anthropic.
+ */
+export function getAskScoutDailyCap(tierId: SubscriptionTierId): number {
+  const cap = getSubscription(tierId).ask_scout_daily_cap;
+  return cap < 0 ? Number.POSITIVE_INFINITY : cap;
+}
+
 export function listTiers(): SubscriptionTierSpec[] {
   return [...getSpec().tiers];
 }

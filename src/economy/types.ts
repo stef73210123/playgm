@@ -76,6 +76,14 @@ export interface SubscriptionTierSpec {
   monthly_pack_allocation: SubscriptionPackAllocation[];
   card_inventory_cap: number;
   daily_pp_boost: number;
+  /**
+   * Maximum Ask Scout LLM questions per UTC day. 0 = blocked, -1 = unlimited.
+   * Bound at the /scout/ask route via askScoutLimiter so over-cap requests
+   * never reach Anthropic. v1 caps: free 2 / starter 5 / playmaker 10 /
+   * champion 20 — sized to keep marginal Haiku cost negligible while
+   * making the upgrade pressure on Free tangible.
+   */
+  ask_scout_daily_cap: number;
 }
 
 export interface SubscriptionsSpec {
