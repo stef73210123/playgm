@@ -335,6 +335,14 @@ const DASHBOARD_HTML = /* html */ `<!doctype html>
     </div>
   </header>
 
+  <nav style="margin: 0 0 16px; font-size: 13px; color: var(--muted);">
+    Editors:
+    <a href="/admin/edit/players" style="color: var(--accent); text-decoration: none; margin: 0 4px;">Players</a>·
+    <a href="/admin/edit/teams"   style="color: var(--accent); text-decoration: none; margin: 0 4px;">Teams</a>·
+    <a href="/admin/edit/cards"   style="color: var(--accent); text-decoration: none; margin: 0 4px;">Card templates</a>·
+    <a href="/admin/edit/trivia"  style="color: var(--accent); text-decoration: none; margin: 0 4px;">Trivia</a>
+  </nav>
+
   <div id="error"></div>
 
   <section class="pills" id="pills"></section>
