@@ -29,6 +29,8 @@ import {
   getGameplayCounters,
   getScoutVoiceStats,
 } from '../services/supabaseAdmin.js';
+import { getEconomicMetrics } from '../services/economicMetrics.js';
+import { getEconomicTargets } from '../services/economicTargets.js';
 
 function findProjectRoot(): string {
   const cwd = process.cwd();
@@ -90,6 +92,7 @@ const ROUTE_PURPOSES: Record<string, string> = {
   'GET /practice-drafts': 'Practice draft list',
   'GET /admin/status': 'Status aggregator (this dashboard)',
   'GET /admin/dashboard': 'Status dashboard HTML',
+  'GET /admin/api/economic-metrics': 'Live economic metrics (PP, packs, cards, subs, retention)',
 };
 
 function pickPurpose(method: string, urlPath: string): string {
@@ -145,6 +148,7 @@ export async function adminRoutes(fastify: FastifyInstance): Promise<void> {
       users,
       gameplay,
       scoutVoice,
+      economicMetrics,
     ] = await Promise.all([
       probeAnthropic(),
       probeElevenLabs(),
@@ -154,7 +158,9 @@ export async function adminRoutes(fastify: FastifyInstance): Promise<void> {
       getUsersAndSessions(),
       getGameplayCounters(),
       getScoutVoiceStats(),
+      getEconomicMetrics(),
     ]);
+    const economicTargets = getEconomicTargets();
 
     const corpus = await getDataCorpus({ scoutVoiceLinesCount: scoutVoice.count });
     const lastUpdated = await getLastUpdated({ scoutVoiceDbLatest: scoutVoice.latest });
@@ -227,6 +233,20 @@ export async function adminRoutes(fastify: FastifyInstance): Promise<void> {
         ...lastUpdated,
         git_head: readGitHead(),
       },
+      economic_metrics: economicMetrics,
+      economic_targets: economicTargets,
+    };
+  });
+
+  fastify.get('/admin/api/economic-metrics', async () => {
+    const [metrics, targets] = await Promise.all([
+      getEconomicMetrics(),
+      Promise.resolve(getEconomicTargets()),
+    ]);
+    return {
+      generated_at: new Date().toISOString(),
+      economic_metrics: metrics,
+      economic_targets: targets,
     };
   });
 
@@ -316,6 +336,18 @@ const DASHBOARD_HTML = /* html */ `<!doctype html>
   summary { cursor: pointer; color: var(--accent); font-size: 13px; padding: 4px 0; }
   pre { font-size: 12px; color: var(--muted); margin: 0; white-space: pre-wrap; word-break: break-word; }
   .err-banner { background: rgba(248,113,113,.1); border: 1px solid var(--red); color: var(--red); padding: 10px; border-radius: 8px; margin-bottom: 16px; font-size: 13px; }
+  .status-pill { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 11px; font-weight: 600; }
+  .status-pill.ok    { background: rgba(74,222,128,.15);  color: var(--green);  }
+  .status-pill.warn  { background: rgba(250,204,21,.15);  color: var(--yellow); }
+  .status-pill.fail  { background: rgba(248,113,113,.15); color: var(--red);    }
+  .status-pill.unmeas{ background: rgba(107,114,128,.2);  color: var(--muted);  }
+  abbr[title] { text-decoration: dotted underline; cursor: help; }
+  .mini-bar-row { display: grid; grid-template-columns: 96px 1fr 56px; gap: 8px; align-items: center; font-size: 12px; margin: 2px 0; }
+  .mini-bar-row .label { color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .mini-bar-row .bar { background: var(--card-2); border-radius: 4px; height: 10px; overflow: hidden; position: relative; }
+  .mini-bar-row .bar-fill { background: var(--accent); height: 100%; }
+  .mini-bar-row .val { color: var(--text); text-align: right; font-variant-numeric: tabular-nums; }
+  .pity-warn { color: var(--yellow); font-weight: 600; }
   @media (max-width: 720px) {
     body { padding: 14px; }
     .pills { grid-template-columns: 1fr 1fr; }
@@ -372,6 +404,38 @@ const DASHBOARD_HTML = /* html */ `<!doctype html>
       <h2>Last Updated</h2>
       <div id="last-updated-body">Loading…</div>
     </div>
+  </div>
+
+  <h2 style="margin: 28px 0 12px; font-size: 16px; letter-spacing: 0.4px; color: var(--accent); text-transform: uppercase;">Economic Metrics</h2>
+  <div class="grid">
+    <div class="card" id="econ-pp-card">
+      <h2>PP Flywheel</h2>
+      <div id="econ-pp-body">Loading…</div>
+    </div>
+    <div class="card" id="econ-packs-card">
+      <h2>Packs</h2>
+      <div id="econ-packs-body">Loading…</div>
+    </div>
+    <div class="card" id="econ-cards-card">
+      <h2>Card Inventory</h2>
+      <div id="econ-cards-body">Loading…</div>
+    </div>
+    <div class="card" id="econ-subs-card">
+      <h2>Subscription Mix</h2>
+      <div id="econ-subs-body">Loading…</div>
+    </div>
+    <div class="card" id="econ-rosters-card">
+      <h2>Roster Activity</h2>
+      <div id="econ-rosters-body">Loading…</div>
+    </div>
+    <div class="card" id="econ-engage-card">
+      <h2>Engagement</h2>
+      <div id="econ-engage-body">Loading…</div>
+    </div>
+  </div>
+  <div class="card" id="econ-targets-card">
+    <h2>Targets vs Actuals</h2>
+    <div id="econ-targets-body">Loading…</div>
   </div>
 
   <div class="card" id="routes-card">
@@ -562,6 +626,9 @@ const DASHBOARD_HTML = /* html */ `<!doctype html>
       \`<div class="kv"><span class="k">\${esc(k)}</span><span>\${v ? \`<code>\${esc(new Date(v).toLocaleString())}</code> · <span style="color:var(--muted)">\${esc(relTime(v))}</span>\` : '<span class="tag unmeasured">unmeasured</span>'}</span></div>\`
     ).join('');
 
+    // ─── Economic Metrics ────────────────────────────────────────────────
+    renderEconomic(s.economic_metrics || {}, s.economic_targets || {});
+
     // Routes
     const routes = s.internal_routes || [];
     el('route-count').textContent = routes.length;
@@ -572,6 +639,292 @@ const DASHBOARD_HTML = /* html */ `<!doctype html>
           <td><code>\${esc(r.method)}</code></td>
           <td><code>\${esc(r.path)}</code></td>
           <td style="color:var(--muted)">\${esc(r.purpose)}</td>
+        </tr>\`).join('')}
+      </tbody>
+    </table>\`;
+  }
+
+  function metricVal(c) {
+    if (c == null) return null;
+    if (typeof c === 'object' && 'value' in c) return c.unmeasured ? null : c.value;
+    return c;
+  }
+  function metricCell(c, suffix) {
+    if (c == null) return '<span class="tag unmeasured">—</span>';
+    if (typeof c === 'object' && 'value' in c) {
+      if (c.unmeasured) return '<abbr title="' + esc(c.error || 'unmeasured') + '"><span class="tag unmeasured">unmeasured</span></abbr>';
+      return fmt(c.value) + (suffix || '');
+    }
+    return fmt(c) + (suffix || '');
+  }
+  function miniBar(label, value, max, valStr) {
+    const v = value == null ? 0 : value;
+    const pctW = max > 0 ? Math.min(100, Math.round((v / max) * 100)) : 0;
+    return \`<div class="mini-bar-row">
+      <span class="label">\${esc(label)}</span>
+      <span class="bar"><span class="bar-fill" style="width:\${pctW}%"></span></span>
+      <span class="val">\${esc(valStr ?? fmt(v))}</span>
+    </div>\`;
+  }
+  function statusPill(actual, low, high) {
+    if (actual == null) return '<span class="status-pill unmeas">—</span>';
+    if (actual >= low && actual <= high) return '<span class="status-pill ok">✅ in range</span>';
+    const margin = (high - low) * 0.15;
+    if (actual >= low - margin && actual <= high + margin) return '<span class="status-pill warn">⚠ near edge</span>';
+    return '<span class="status-pill fail">❌ out of range</span>';
+  }
+
+  function renderEconomic(m, t) {
+    // ── PP Flywheel ────────────────────────────────────────────────────
+    const pp = m.pp || {};
+    const dist = (pp.distribution_by_tier && pp.distribution_by_tier.value) || {};
+    const tiers = ['Peewee','Travel','JV','Varsity','Semi-Pro','Pro','Starter','All-Star','MVP','Champion','Hall of Famer','Legend','GOAT'];
+    const maxTier = Math.max(1, ...tiers.map(t => dist[t] ?? 0));
+    const distHtml = pp.distribution_by_tier && pp.distribution_by_tier.unmeasured
+      ? '<abbr title="' + esc(pp.distribution_by_tier.error || '') + '"><span class="tag unmeasured">unmeasured</span></abbr>'
+      : tiers.map(t => miniBar(t, dist[t] ?? 0, maxTier)).join('');
+    el('econ-pp-body').innerHTML = \`
+      <div class="tile-grid">
+        \${tileHtml('lifetime PP', pp.total_earned_lifetime)}
+        \${tileHtml('PP earned 24h', pp.total_earned_24h)}
+        \${tileHtml('PP earned 7d', pp.total_earned_7d)}
+        \${tileHtml('median PP/user', pp.median_pp_per_user)}
+        \${tileHtml('p90 PP/user', pp.p90_pp_per_user)}
+        \${tileHtml('avg daily/active', pp.avg_daily_earn_per_active_user)}
+      </div>
+      <div style="margin-top:10px;color:var(--muted);font-size:12px;">distribution by tier (\${esc(tiers.length)} levels)</div>
+      <div style="margin-top:6px;">\${distHtml}</div>
+    \`;
+
+    // ── Packs ──────────────────────────────────────────────────────────
+    const packs = m.packs || {};
+    const ldro = packs.legendary_drop_rate_observed || {};
+    const ldrt = (t.cards && t.cards.legendary_drop_rates) || {};
+    function dropRow(tierKey, label) {
+      const obs = ldro[tierKey];
+      const tgt = ldrt[tierKey];
+      const obsVal = (obs && !obs.unmeasured) ? obs.value : null;
+      const tgtVal = tgt ? tgt.current : null;
+      const obsStr = obs && obs.unmeasured
+        ? '<abbr title="' + esc(obs.error || '') + '"><span class="tag unmeasured">unmeasured</span></abbr>'
+        : (obsVal != null ? obsVal.toFixed(1) + '%' : '—');
+      return \`<div class="kv">
+        <span class="k">\${esc(label)}</span>
+        <span>obs \${obsStr} · tgt \${tgtVal != null ? (tgtVal*100).toFixed(0) + '%' : '—'} <abbr title="\${esc(tgt && tgt.source || '')}">ⓘ</abbr></span>
+      </div>\`;
+    }
+    el('econ-packs-body').innerHTML = \`
+      <div class="tile-grid">
+        \${tileHtml('rookie 30d', packs.rookie_pack_opens_30d)}
+        \${tileHtml('pro 30d', packs.pro_pack_opens_30d)}
+        \${tileHtml('all-star 30d', packs.all_star_pack_opens_30d)}
+        \${tileHtml('mvp 30d', packs.mvp_pack_opens_30d)}
+        \${tileHtml('goat 30d', packs.goat_pack_opens_30d)}
+        \${tileHtml('avg/active 30d', packs.avg_packs_per_active_user_30d)}
+      </div>
+      <div style="margin-top:10px;color:var(--muted);font-size:12px;">legendary drop rate · observed vs target</div>
+      \${dropRow('pro_pack', 'Pro Pack')}
+      \${dropRow('all_star_pack', 'All-Star Pack')}
+      \${dropRow('mvp_pack', 'MVP Pack')}
+      \${dropRow('goat_pack', 'GOAT Pack')}
+    \`;
+
+    // ── Cards ──────────────────────────────────────────────────────────
+    const cards = m.cards || {};
+    const rarityDist = (cards.cards_by_rarity && cards.cards_by_rarity.value) || {};
+    const rarities = ['common','uncommon','rare','epic','legendary'];
+    const maxRar = Math.max(1, ...rarities.map(r => rarityDist[r] ?? 0));
+    const rarityHtml = cards.cards_by_rarity && cards.cards_by_rarity.unmeasured
+      ? '<abbr title="' + esc(cards.cards_by_rarity.error || '') + '"><span class="tag unmeasured">unmeasured</span></abbr>'
+      : rarities.map(r => miniBar(r, rarityDist[r] ?? 0, maxRar)).join('');
+    const pityPctVal = metricVal(cards.legendary_pity_pct);
+    const pityPctTarget = (t.cards && t.cards.legendary_pity_user_pct_target && t.cards.legendary_pity_user_pct_target.max) || 0.05;
+    const pityWarn = (pityPctVal != null && pityPctVal > pityPctTarget * 100);
+    el('econ-cards-body').innerHTML = \`
+      <div class="tile-grid">
+        \${tileHtml('cards in circ', cards.total_cards_in_circulation)}
+        \${tileHtml('avg cards/user', cards.avg_cards_per_user)}
+        \${tileHtml('pity users at threshold', cards.pity_users_at_threshold)}
+      </div>
+      <div style="margin-top:10px;color:var(--muted);font-size:12px;">cards by rarity (5-rarity GDD spec; uncommon+epic schema-pending)</div>
+      <div style="margin-top:6px;">\${rarityHtml}</div>
+      <div class="kv" style="margin-top:8px;">
+        <span class="k">legendary pity %</span>
+        <span class="\${pityWarn ? 'pity-warn' : ''}">\${metricCell(cards.legendary_pity_pct, '%')} <abbr title="GDD card-system §12 — should affect <\${(pityPctTarget*100).toFixed(0)}% of users">target ≤\${(pityPctTarget*100).toFixed(0)}%</abbr></span>
+      </div>
+    \`;
+
+    // ── Subscriptions ──────────────────────────────────────────────────
+    const subs = m.subscriptions || {};
+    const subDist = (subs.by_tier && subs.by_tier.value) || {};
+    const subList = ['free','starter','playmaker','champion'];
+    const subTotal = subList.reduce((acc, k) => acc + (subDist[k] ?? 0), 0) || 1;
+    const subRows = subs.by_tier && subs.by_tier.unmeasured
+      ? '<abbr title="' + esc(subs.by_tier.error || '') + '"><span class="tag unmeasured">unmeasured</span></abbr>'
+      : subList.map(k => {
+          const v = subDist[k] ?? 0;
+          const p = Math.round((v / subTotal) * 100);
+          return miniBar(k, v, subTotal, v + ' (' + p + '%)');
+        }).join('');
+    el('econ-subs-body').innerHTML = \`
+      <div class="tile-grid">
+        \${tileHtml('paid %', subs.paid_pct, '%')}
+        \${tileHtml('MRR estimate', subs.monthly_revenue_estimate_usd, ' USD')}
+        \${tileHtml('ARPU', subs.arpu_usd, ' USD')}
+        \${tileHtml('ARPPU', subs.arppu_usd, ' USD')}
+      </div>
+      <div style="margin-top:10px;color:var(--muted);font-size:12px;">tier mix</div>
+      <div style="margin-top:6px;">\${subRows}</div>
+    \`;
+
+    // ── Rosters ─────────────────────────────────────────────────────────
+    const r = m.rosters || {};
+    el('econ-rosters-body').innerHTML = \`
+      <div class="tile-grid">
+        \${tileHtml('rosters locked 24h', r.rosters_locked_24h)}
+        \${tileHtml('rosters w/ legendary 24h', r.rosters_with_legendary_24h)}
+        \${tileHtml('avg energy used', r.avg_energy_used_per_roster)}
+        \${tileHtml('h2h matches 24h', r.h2h_matches_24h)}
+        \${tileHtml('h2h win PP 24h', r.h2h_win_pp_total_24h)}
+        \${tileHtml('h2h loss PP 24h', r.h2h_loss_pp_total_24h)}
+      </div>
+    \`;
+
+    // ── Engagement (trivia + retention) ─────────────────────────────────
+    const tp = m.trivia_picks || {};
+    const ret = m.retention || {};
+    el('econ-engage-body').innerHTML = \`
+      <div class="tile-grid">
+        \${tileHtml('DAU', ret.dau)}
+        \${tileHtml('WAU', ret.wau)}
+        \${tileHtml('MAU', ret.mau)}
+        \${tileHtml('DAU/MAU %', ret.dau_mau_pct, '%')}
+        \${tileHtml('trivia 24h', tp.trivia_questions_answered_24h)}
+        \${tileHtml('trivia correct %', tp.trivia_correct_pct, '%')}
+        \${tileHtml('picks 24h', tp.play_picks_made_24h)}
+        \${tileHtml('picks correct %', tp.play_picks_correct_pct, '%')}
+        \${tileHtml('streak-5 bonuses 24h', tp.streak_5_bonuses_24h)}
+      </div>
+      <div style="margin-top:10px;color:var(--muted);font-size:12px;">retention (target d30 ≥ \${esc(((t.business && t.business.target_d30_retention_pct && t.business.target_d30_retention_pct.value) || 0.20) * 100)}% — industry standard)</div>
+      <div class="tile-grid">
+        \${tileHtml('d1 retention', ret.d1_retention_7d, '%')}
+        \${tileHtml('d7 retention', ret.d7_retention, '%')}
+        \${tileHtml('d30 retention', ret.d30_retention, '%')}
+      </div>
+    \`;
+
+    // ── Targets vs Actuals table ────────────────────────────────────────
+    const rows = [];
+    // Pro pack cost
+    if (t.pp && t.pp.pro_pack_cost) {
+      const tgt = t.pp.pro_pack_cost;
+      rows.push({
+        metric: 'Pro Pack cost (PP)',
+        actual: tgt.current, // current spec value — live spend tracking later
+        target: tgt.target_min + '–' + tgt.target_max,
+        status: statusPill(tgt.current, tgt.target_min, tgt.target_max),
+        source: tgt.source,
+      });
+    }
+    // Legendary drop rates
+    if (t.cards && t.cards.legendary_drop_rates) {
+      ['pro_pack','all_star_pack','mvp_pack','goat_pack'].forEach(k => {
+        const tgt = t.cards.legendary_drop_rates[k];
+        const obs = (m.packs && m.packs.legendary_drop_rate_observed && m.packs.legendary_drop_rate_observed[k]);
+        const obsVal = (obs && !obs.unmeasured) ? obs.value : null;
+        const tgtPct = tgt.current * 100;
+        const status = obsVal == null
+          ? '<span class="status-pill unmeas">unmeasured</span>'
+          : statusPill(obsVal, tgtPct * 0.5, tgtPct * 1.5);
+        rows.push({
+          metric: 'Legendary drop · ' + k.replace(/_/g, ' '),
+          actual: obsVal == null ? '—' : obsVal.toFixed(2) + '%',
+          target: tgtPct.toFixed(0) + '%',
+          status,
+          source: tgt.source,
+        });
+      });
+    }
+    // Legendary pity %
+    if (t.cards && t.cards.legendary_pity_user_pct_target) {
+      const tgt = t.cards.legendary_pity_user_pct_target;
+      const obs = m.cards && m.cards.legendary_pity_pct;
+      const obsVal = (obs && !obs.unmeasured) ? obs.value : null;
+      const tgtPct = tgt.max * 100;
+      const status = obsVal == null
+        ? '<span class="status-pill unmeas">unmeasured</span>'
+        : (obsVal <= tgtPct ? '<span class="status-pill ok">✅ in range</span>'
+           : '<span class="status-pill fail">❌ out of range</span>');
+      rows.push({
+        metric: 'Legendary pity user %',
+        actual: obsVal == null ? '—' : obsVal.toFixed(1) + '%',
+        target: '≤ ' + tgtPct.toFixed(0) + '%',
+        status,
+        source: tgt.source,
+      });
+    }
+    // ARPU
+    if (t.business && t.business.target_arpu_usd_monthly) {
+      const tgt = t.business.target_arpu_usd_monthly;
+      const obs = m.subscriptions && m.subscriptions.arpu_usd;
+      const obsVal = (obs && !obs.unmeasured) ? obs.value : null;
+      const status = obsVal == null
+        ? '<span class="status-pill unmeas">unmeasured</span>'
+        : (obsVal >= tgt.value ? '<span class="status-pill ok">✅ in range</span>'
+           : statusPill(obsVal, tgt.value * 0.85, tgt.value * 100));
+      rows.push({
+        metric: 'ARPU (monthly USD)',
+        actual: obsVal == null ? '—' : '$' + obsVal.toFixed(2),
+        target: '≥ $' + tgt.value.toFixed(2) + ' <span class="status-pill warn">extrapolated</span>',
+        status,
+        source: tgt.source,
+      });
+    }
+    // Paid conversion
+    if (t.business && t.business.target_paid_conversion_pct) {
+      const tgt = t.business.target_paid_conversion_pct;
+      const obs = m.subscriptions && m.subscriptions.paid_pct;
+      const obsVal = (obs && !obs.unmeasured) ? obs.value : null;
+      const tgtPct = tgt.value * 100;
+      const status = obsVal == null
+        ? '<span class="status-pill unmeas">unmeasured</span>'
+        : (obsVal >= tgtPct ? '<span class="status-pill ok">✅ in range</span>'
+           : statusPill(obsVal, tgtPct * 0.5, tgtPct * 100));
+      rows.push({
+        metric: 'Paid conversion %',
+        actual: obsVal == null ? '—' : obsVal.toFixed(1) + '%',
+        target: '≥ ' + tgtPct.toFixed(0) + '% <span class="status-pill warn">industry-standard</span>',
+        status,
+        source: tgt.source,
+      });
+    }
+    // d30 retention
+    if (t.business && t.business.target_d30_retention_pct) {
+      const tgt = t.business.target_d30_retention_pct;
+      const obs = m.retention && m.retention.d30_retention;
+      const obsVal = (obs && !obs.unmeasured) ? obs.value : null;
+      const tgtPct = tgt.value * 100;
+      const status = obsVal == null
+        ? '<span class="status-pill unmeas">unmeasured</span>'
+        : (obsVal >= tgtPct ? '<span class="status-pill ok">✅ in range</span>'
+           : '<span class="status-pill fail">❌ out of range</span>');
+      rows.push({
+        metric: 'D30 retention %',
+        actual: obsVal == null ? '—' : obsVal.toFixed(1) + '%',
+        target: '≥ ' + tgtPct.toFixed(0) + '% <span class="status-pill warn">industry-standard</span>',
+        status,
+        source: tgt.source,
+      });
+    }
+    el('econ-targets-body').innerHTML = \`<table>
+      <thead><tr><th>Metric</th><th>Actual</th><th>Target</th><th>Status</th><th>Source</th></tr></thead>
+      <tbody>
+        \${rows.map(r => \`<tr>
+          <td>\${esc(r.metric)}</td>
+          <td><code>\${typeof r.actual === 'string' ? r.actual : esc(r.actual)}</code></td>
+          <td>\${r.target}</td>
+          <td>\${r.status}</td>
+          <td><abbr title="\${esc(r.source || '')}" style="color:var(--muted)">\${esc((r.source || '').slice(0,40))}\${(r.source || '').length > 40 ? '…' : ''}</abbr></td>
         </tr>\`).join('')}
       </tbody>
     </table>\`;
