@@ -31,6 +31,7 @@ import {
 } from '../services/supabaseAdmin.js';
 import { getEconomicMetrics } from '../services/economicMetrics.js';
 import { getEconomicTargets } from '../services/economicTargets.js';
+import { getAdvertisingReport } from '../services/advertising.js';
 
 function findProjectRoot(): string {
   const cwd = process.cwd();
@@ -93,6 +94,8 @@ const ROUTE_PURPOSES: Record<string, string> = {
   'GET /admin/status': 'Status aggregator (this dashboard)',
   'GET /admin/dashboard': 'Status dashboard HTML',
   'GET /admin/api/economic-metrics': 'Live economic metrics (PP, packs, cards, subs, retention)',
+  'GET /admin/edit/advertising': 'Advertising actuals editor',
+  'GET /admin/api/advertising': 'Advertising report (all channels)',
 };
 
 function pickPurpose(method: string, urlPath: string): string {
@@ -161,6 +164,7 @@ export async function adminRoutes(fastify: FastifyInstance): Promise<void> {
       getEconomicMetrics(),
     ]);
     const economicTargets = getEconomicTargets();
+    const advertising = getAdvertisingReport();
 
     const corpus = await getDataCorpus({ scoutVoiceLinesCount: scoutVoice.count });
     const lastUpdated = await getLastUpdated({ scoutVoiceDbLatest: scoutVoice.latest });
@@ -235,6 +239,14 @@ export async function adminRoutes(fastify: FastifyInstance): Promise<void> {
       },
       economic_metrics: economicMetrics,
       economic_targets: economicTargets,
+      advertising,
+    };
+  });
+
+  fastify.get('/admin/api/advertising', async () => {
+    return {
+      generated_at: new Date().toISOString(),
+      ...getAdvertisingReport(),
     };
   });
 
@@ -372,7 +384,8 @@ const DASHBOARD_HTML = /* html */ `<!doctype html>
     <a href="/admin/edit/players" style="color: var(--accent); text-decoration: none; margin: 0 4px;">Players</a>·
     <a href="/admin/edit/teams"   style="color: var(--accent); text-decoration: none; margin: 0 4px;">Teams</a>·
     <a href="/admin/edit/cards"   style="color: var(--accent); text-decoration: none; margin: 0 4px;">Card templates</a>·
-    <a href="/admin/edit/trivia"  style="color: var(--accent); text-decoration: none; margin: 0 4px;">Trivia</a>
+    <a href="/admin/edit/trivia"  style="color: var(--accent); text-decoration: none; margin: 0 4px;">Trivia</a>·
+    <a href="/admin/edit/advertising" style="color: var(--accent); text-decoration: none; margin: 0 4px;">Advertising</a>
   </nav>
 
   <div id="error"></div>
@@ -436,6 +449,20 @@ const DASHBOARD_HTML = /* html */ `<!doctype html>
   <div class="card" id="econ-targets-card">
     <h2>Targets vs Actuals</h2>
     <div id="econ-targets-body">Loading…</div>
+  </div>
+
+  <h2 style="margin: 28px 0 12px; font-size: 16px; letter-spacing: 0.4px; color: var(--accent); text-transform: uppercase;">Advertising</h2>
+  <div class="card" id="ad-portfolio-card">
+    <h2>Portfolio</h2>
+    <div id="ad-portfolio-body">Loading…</div>
+  </div>
+  <div class="card" id="ad-funnel-card">
+    <h2>Conversion Funnel (30d)</h2>
+    <div id="ad-funnel-body">Loading…</div>
+  </div>
+  <div class="card" id="ad-channels-card">
+    <h2>Channels</h2>
+    <div id="ad-channels-body">Loading…</div>
   </div>
 
   <div class="card" id="routes-card">
@@ -628,6 +655,9 @@ const DASHBOARD_HTML = /* html */ `<!doctype html>
 
     // ─── Economic Metrics ────────────────────────────────────────────────
     renderEconomic(s.economic_metrics || {}, s.economic_targets || {});
+
+    // ─── Advertising ─────────────────────────────────────────────────────
+    renderAdvertising(s.advertising || {});
 
     // Routes
     const routes = s.internal_routes || [];
@@ -928,6 +958,84 @@ const DASHBOARD_HTML = /* html */ `<!doctype html>
         </tr>\`).join('')}
       </tbody>
     </table>\`;
+  }
+
+  function renderAdvertising(ad) {
+    const portfolio = ad.portfolio || {};
+    const channels = ad.channels || [];
+    const funnel = portfolio.conversion_funnel || {};
+    const fmtUsd = v => v == null ? '—' : '$' + Number(v).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    const fmtRoas = v => v == null ? '—' : (Number(v).toFixed(2) + 'x');
+    const fmtNum = v => v == null ? '—' : Number(v).toLocaleString();
+
+    el('ad-portfolio-body').innerHTML = \`
+      <div class="tile-grid">
+        \${tileHtml('monthly spend', fmtUsd(portfolio.monthly_spend_total_usd), 'USD · current month')}
+        \${tileHtml('blended CPI', fmtUsd(portfolio.blended_cpi_usd), 'spend ÷ installs')}
+        \${tileHtml('blended CAC', fmtUsd(portfolio.blended_cac_usd), 'spend ÷ signups')}
+        \${tileHtml('blended ROAS', fmtRoas(portfolio.blended_roas), 'revenue ÷ spend')}
+        \${tileHtml('attributed installs 30d', fmtNum(portfolio.attributed_installs_30d_total))}
+      </div>
+      \${(ad.notes||[]).length ? '<div style="margin-top:8px;color:var(--yellow);font-size:12px;">⚠ ' + ad.notes.map(esc).join(' · ') + '</div>' : ''}
+    \`;
+
+    // Funnel
+    const stages = [
+      ['Impressions', funnel.impressions || 0],
+      ['Clicks', funnel.clicks || 0],
+      ['Installs', funnel.installs || 0],
+      ['Signups', funnel.signups || 0],
+      ['Roster locked', funnel.first_roster_locked || 0],
+      ['Paid subs', funnel.paid_subs || 0],
+    ];
+    const maxStage = Math.max(1, ...stages.map(s => s[1]));
+    const stageRows = stages.map((s, i) => {
+      const prev = i > 0 ? stages[i-1][1] : null;
+      const conv = (prev && prev > 0) ? ((s[1] / prev) * 100).toFixed(1) + '%' : '';
+      return miniBar(s[0], s[1], maxStage, fmtNum(s[1]) + (conv ? ' (↘ ' + conv + ')' : ''));
+    }).join('');
+    el('ad-funnel-body').innerHTML = stageRows || '<div class="muted">no funnel data yet</div>';
+
+    // Channel grid
+    function audienceBadges(a) {
+      if (!a || !a.length) return '';
+      return a.map(t => {
+        const cls = /COPPA|<13/.test(t) ? 'fail' : (/kid-safe|8\+/.test(t) ? 'warn' : 'ok');
+        return '<span class="status-pill ' + cls + '" style="margin-right:4px;">' + esc(t) + '</span>';
+      }).join('');
+    }
+    function statusEmoji(s) {
+      if (s === 'on_target') return '<span class="status-pill ok">✅ on target</span>';
+      if (s === 'near')      return '<span class="status-pill warn">⚠ near</span>';
+      if (s === 'off')       return '<span class="status-pill fail">❌ off</span>';
+      return '<span class="status-pill unmeas">unmeasured</span>';
+    }
+    el('ad-channels-body').innerHTML = '<div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(280px, 1fr));gap:10px;">' +
+      channels.map(c => {
+        const target = c.target || {};
+        const cur = c.current || {};
+        const kpiV = cur[c.kpi_focus];
+        const kpiTargetKey = Object.keys(target).find(k => k === c.kpi_focus || k === 'target_' + c.kpi_focus || k.includes(c.kpi_focus.replace(/_(usd|pct)$/, '')));
+        const kpiT = kpiTargetKey ? target[kpiTargetKey] : null;
+        const targetSrcAttr = c.target_source ? ' title="' + esc(c.target_source) + '"' : '';
+        return \`<div class="card" style="margin:0;">
+          <div style="display:flex;align-items:baseline;justify-content:space-between;gap:8px;">
+            <strong>\${esc(c.display_name)}</strong>
+            \${statusEmoji(c.status)}
+          </div>
+          <div class="muted" style="margin-top:2px;">\${esc(c.category)} · KPI: <code>\${esc(c.kpi_focus)}</code></div>
+          <div style="margin-top:6px;">\${audienceBadges(c.audience_constraints)}</div>
+          <div class="kv" style="margin-top:8px;">
+            <span class="k">current</span>
+            <span><code>\${kpiV != null ? esc(String(kpiV)) : '—'}</code></span>
+          </div>
+          <div class="kv">
+            <span class="k">target</span>
+            <span\${targetSrcAttr}><code>\${kpiT != null ? esc(String(kpiT)) : '—'}</code> <span class="status-pill warn">extrapolated</span></span>
+          </div>
+          \${c.last_updated_iso ? '<div class="muted" style="margin-top:6px;">last update: ' + esc(relTime(c.last_updated_iso)) + '</div>' : '<div class="muted" style="margin-top:6px;">last update: —</div>'}
+        </div>\`;
+      }).join('') + '</div>';
   }
 
   function formatUptime(s) {

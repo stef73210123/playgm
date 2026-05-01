@@ -137,6 +137,18 @@ describe('admin routes', () => {
           business: expect.any(Object),
         }),
       );
+      // Advertising rollup is wired in.
+      expect(body['advertising']).toEqual(
+        expect.objectContaining({
+          channels: expect.any(Array),
+          portfolio: expect.objectContaining({
+            monthly_spend_total_usd: expect.any(Number),
+            conversion_funnel: expect.any(Object),
+          }),
+        }),
+      );
+      const ad = body['advertising'] as { channels: Array<{ channel_id: string }> };
+      expect(ad.channels.length).toBe(10);
     } finally {
       await app.close();
     }
