@@ -259,18 +259,6 @@ export async function adminRoutes(fastify: FastifyInstance): Promise<void> {
     };
   });
 
-  fastify.get('/admin/api/safety-matrix', async (_req, reply) => {
-    try {
-      const file = loadSafetyMatrix();
-      return { ok: true, ...file };
-    } catch (err) {
-      reply.code(500).send({
-        ok: false,
-        error: err instanceof Error ? err.message : 'failed to load safety matrix',
-      });
-      return reply;
-    }
-  });
 
   fastify.get('/admin/api/advertising', async () => {
     return {
