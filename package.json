@@ -17,6 +17,8 @@
     "pull:mlb": "tsx --import ./src/env-loader.ts src/scripts/pull-mlb-stats.ts",
     "pull:nhl": "tsx --import ./src/env-loader.ts src/scripts/pull-nhl-stats.ts",
     "pull:mls": "tsx --import ./src/env-loader.ts src/scripts/pull-mls-stats.ts",
+    "clean:caches": "tsx --import ./src/env-loader.ts src/scripts/clean-stat-caches.ts",
+    "probe:canonical": "tsx --import ./src/env-loader.ts src/scripts/probe-canonical.ts",
     "generate-tier-files": "tsx --import ./src/env-loader.ts src/scripts/generate-tier-files.ts"
   },
   "dependencies": {
