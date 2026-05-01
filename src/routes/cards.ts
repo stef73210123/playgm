@@ -4,26 +4,24 @@ import { supabase } from '../db/client.js';
 import { brandingFilter } from '../services/branding.js';
 import { isCardAvailable } from '../utils/cardLock.js';
 import { requireAuth, type AuthenticatedRequest } from '../middleware/auth.js';
+import { rollPack, type PityState } from '../economy/index.js';
 
-// Rarity drop weights for pack opening
-const RARITY_WEIGHTS: Record<string, Record<string, number>> = {
-  common:    { common: 70, rare: 20, epic: 8,  legendary: 2  },
-  rare:      { common: 40, rare: 35, epic: 18, legendary: 7  },
-  epic:      { common: 20, rare: 30, epic: 35, legendary: 15 },
-  legendary: { common: 10, rare: 20, epic: 35, legendary: 35 },
-  starter:   { common: 60, rare: 30, epic: 8,  legendary: 2  },
+/**
+ * Legacy → v1 pack-id translation. The DB still stores `pack_type` strings
+ * from the v0 schema (common / rare / epic / legendary / starter); the v1
+ * spec keys packs by `pack_id` (rookie_pack / pro_pack / all_star_pack /
+ * mvp_pack / goat_pack). When the DB migrates this map can be removed.
+ *
+ * TODO(spec card-system.md §3): drop this map once the play_packs schema
+ * is migrated to use pack_id.
+ */
+const LEGACY_PACK_TYPE_TO_ID: Record<string, string> = {
+  starter: 'rookie_pack',
+  common: 'rookie_pack',
+  rare: 'pro_pack',
+  epic: 'all_star_pack',
+  legendary: 'mvp_pack',
 };
-
-function rollRarity(packType: string): string {
-  const weights = RARITY_WEIGHTS[packType] ?? RARITY_WEIGHTS['common']!;
-  const total = Object.values(weights).reduce((a, b) => a + b, 0);
-  let roll = Math.random() * total;
-  for (const [rarity, weight] of Object.entries(weights)) {
-    roll -= weight;
-    if (roll <= 0) return rarity;
-  }
-  return 'common';
-}
 
 export async function cardsRoutes(fastify: FastifyInstance): Promise<void> {
   // GET /cards
@@ -68,14 +66,18 @@ export async function cardsRoutes(fastify: FastifyInstance): Promise<void> {
     if (packErr) return reply.code(500).send({ error: packErr.message });
     if (!pack) return reply.code(404).send({ error: 'Pack not found or already opened' });
 
-    // Roll 3 cards
-    const CARDS_PER_PACK = 3;
-    const rollResults = Array.from({ length: CARDS_PER_PACK }, () =>
-      rollRarity((pack as Record<string, unknown>)['pack_type'] as string)
-    );
+    // Use the v1 server-authoritative pack roller. Translate the legacy
+    // `pack_type` string to a v1 `pack_id`, then call rollPack with the
+    // user's current pity state. Pity state isn't yet persisted (table
+    // not migrated), so for now we pass a zeroed counter — the roller
+    // returns the would-be next state, which a future commit will save.
+    const packType = (pack as Record<string, unknown>)['pack_type'] as string;
+    const packId = LEGACY_PACK_TYPE_TO_ID[packType] ?? 'rookie_pack';
+    const pityState: PityState = { packs_since_rare_plus: 0, cards_since_legendary: 0 };
+    const rollResult = rollPack(packId, pityState);
 
-    // Insert new cards
-    const cardInserts = rollResults.map((rarity) => ({
+    // Insert new cards. Card slot count now matches the pack spec.
+    const cardInserts = rollResult.rarities.map((rarity) => ({
       owner_id: profileId,
       rarity,
       energy: 3,

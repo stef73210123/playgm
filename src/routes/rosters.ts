@@ -16,6 +16,7 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { requireAuth, type AuthenticatedRequest } from '../middleware/auth.js';
+import { validateRoster, type RosterCard } from '../economy/index.js';
 
 const pickSchema = z.object({
   rosterId: z.string().min(1),
@@ -26,6 +27,21 @@ const pickSchema = z.object({
 const createRosterSchema = z.object({
   name: z.string().min(1).max(40).optional(),
   draftMode: z.enum(['snake', 'cap']),
+});
+
+// Lock-roster validation: checks the four constraints from card-system.md §5.
+const lockRosterSchema = z.object({
+  rosterId: z.string().min(1),
+  cards: z
+    .array(
+      z.object({
+        template_id: z.string().min(1),
+        player_id: z.string().min(1),
+        inventory_id: z.string().optional(),
+      }),
+    )
+    .max(64),
+  legendaryAlreadyPlacedThisWeek: z.number().int().min(0).optional(),
 });
 
 function isoMondayOfCurrentWeek(): string {
@@ -99,4 +115,35 @@ export async function rostersRoutes(fastify: FastifyInstance): Promise<void> {
       };
     },
   );
+
+  // ─── POST /rosters/lock — server-authoritative roster validation (card-system.md §5)
+  // Validates the four constraints (energy budget, per-player cap, rarity
+  // caps, cross-roster Legendary cap) before the roster is locked for
+  // scoring. Returns 422 with structured error codes on failure.
+  fastify.post('/rosters/lock', { preHandler: requireAuth }, async (req, reply) => {
+    const parsed = lockRosterSchema.safeParse(req.body);
+    if (!parsed.success) return reply.code(400).send({ error: parsed.error.flatten() });
+    const { profileId } = req as AuthenticatedRequest;
+
+    const cards: RosterCard[] = parsed.data.cards;
+    const result = validateRoster(cards, {
+      legendaryAlreadyPlacedThisWeek: parsed.data.legendaryAlreadyPlacedThisWeek,
+    });
+
+    if (!result.ok) {
+      return reply.code(422).send({
+        ok: false,
+        rosterId: parsed.data.rosterId,
+        errors: result.errors,
+        totals: result.totals,
+      });
+    }
+    return reply.send({
+      ok: true,
+      rosterId: parsed.data.rosterId,
+      profileId,
+      lockedAt: new Date().toISOString(),
+      totals: result.totals,
+    });
+  });
 }
