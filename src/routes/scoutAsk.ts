@@ -1,16 +1,34 @@
 /**
  * scoutAsk.ts
- * POST /scout/ask — COPPA-safe sports Q&A powered by Scout the Fox.
+ * POST /scout/ask  — sports Q&A powered by Scout the Fox (Claude Haiku 4.5).
+ * GET  /scout/quota — returns the current per-(user, UTC day) quota WITHOUT
+ *                     consuming a credit. Used by the client to render the
+ *                     "X/Y questions today" badge + the cap-hit empty state.
  *
  * COPPA notes:
  * - Only question text is sent to LLM. No user ID, age, handle, or PII.
  * - No question history is persisted anywhere.
- * - Rate-limited to 5 req/min per handle (in-memory, resets on server restart).
- * - Only aggregate call counts are logged, never question content.
+ * - Per-handle in-memory rate limit (5 req/min) blunts mash-the-button abuse.
+ * - Per-(user, UTC day) limit comes from the subscription spec — enforced by
+ *   `services/askScoutLimiter.ts` and persisted in the `ask_scout_usage`
+ *   table. See `data/economy/pgm_subscriptions.json#ask_scout_daily_cap`.
+ *
+ * TODO(auth): the per-day limiter currently uses a stub user_id derived from
+ * the bearer-token handle. When real auth ships and a Supabase user
+ * (`req.user.id` + `req.user.subscription_tier`) is bound, swap the
+ * `resolveUserContext` helper below to read from `request.user`. Until then,
+ * the handle stub keeps the cap functional in dev and on tunneled previews
+ * without blocking on the auth task.
  */
 
-import type { FastifyInstance } from 'fastify';
+import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { askScoutLLM } from '../services/scoutLLM.js';
+import {
+  checkAndIncrement,
+  getQuota,
+  type LimiterDecision,
+} from '../services/askScoutLimiter.js';
+import type { SubscriptionTierId } from '../economy/types.js';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -21,6 +39,25 @@ interface AskBody {
 interface AskResponse {
   answer: string;
   references?: Array<{ label: string; url: string }>;
+}
+
+interface QuotaResponse {
+  cap: number | 'unlimited';
+  count: number;
+  remaining: number | 'unlimited';
+  resets_at_iso: string;
+  tier: SubscriptionTierId;
+}
+
+interface DailyCapErrorEnvelope {
+  ok: false;
+  error: {
+    code: 'ASK_SCOUT_DAILY_CAP';
+    message: string;
+    cap: number;
+    remaining: 0;
+    resets_at_iso: string;
+  };
 }
 
 // ─── Topic guard — pre-LLM rejection for obvious non-sports content ───────────
@@ -39,11 +76,10 @@ function isNonSportsTopic(q: string): boolean {
   return NON_SPORTS_PATTERNS.some((re) => re.test(q));
 }
 
-// ─── In-memory rate limiters ──────────────────────────────────────────────────
-// Two layers, both per-handle, both reset on server restart:
-//   - Per-minute: blunts mash-the-button abuse (5 calls / 60s).
-//   - Per-day:    caps worst-case spend (50 calls / 24h). At Haiku 4.5 pricing
-//                 (~$0.001 / call) this bounds a single kid to ~$0.05/day.
+// ─── In-memory per-minute rate limiter ────────────────────────────────────────
+// Distinct from the per-day limiter: this guards against mash-the-button
+// abuse and resets on server restart. The per-day cap (subscription tier)
+// is authoritative and lives in Postgres.
 
 interface RateBucket {
   count: number;
@@ -52,51 +88,72 @@ interface RateBucket {
 
 const PER_MIN_LIMIT = 5;
 const PER_MIN_WINDOW_MS = 60_000;
-const PER_DAY_LIMIT = 50;
-const PER_DAY_WINDOW_MS = 24 * 60 * 60 * 1000;
 
 const minuteBuckets = new Map<string, RateBucket>();
-const dayBuckets = new Map<string, RateBucket>();
 
-function checkBucket(
-  map: Map<string, RateBucket>,
-  handle: string,
-  limit: number,
-  windowMs: number,
-): boolean {
+function checkMinuteLimit(handle: string): boolean {
   const now = Date.now();
-  const bucket = map.get(handle);
+  const bucket = minuteBuckets.get(handle);
   if (!bucket || now >= bucket.resetAt) {
-    map.set(handle, { count: 1, resetAt: now + windowMs });
+    minuteBuckets.set(handle, { count: 1, resetAt: now + PER_MIN_WINDOW_MS });
     return true;
   }
-  if (bucket.count >= limit) return false;
+  if (bucket.count >= PER_MIN_LIMIT) return false;
   bucket.count++;
   return true;
 }
 
-type RateCheck = 'ok' | 'minute' | 'day';
+// ─── Auth shim ────────────────────────────────────────────────────────────────
+// TODO(auth): replace with `request.user.{id, subscription_tier}` once the
+// auth task ships. See file header.
 
-function checkRateLimit(handle: string): RateCheck {
-  // Day cap is checked first (and only consumed if the minute cap also passes)
-  // so that a 429 on the minute cap doesn't consume daily budget.
-  const now = Date.now();
-  const dayBucket = dayBuckets.get(handle);
-  if (dayBucket && now < dayBucket.resetAt && dayBucket.count >= PER_DAY_LIMIT) {
-    return 'day';
-  }
-  if (!checkBucket(minuteBuckets, handle, PER_MIN_LIMIT, PER_MIN_WINDOW_MS)) {
-    return 'minute';
-  }
-  // Minute cap consumed a slot; consume a day slot too.
-  checkBucket(dayBuckets, handle, PER_DAY_LIMIT, PER_DAY_WINDOW_MS);
-  return 'ok';
+interface UserContext {
+  user_id: string;
+  tier: SubscriptionTierId;
 }
 
-// ─── Route ────────────────────────────────────────────────────────────────────
+function resolveUserContext(request: FastifyRequest): UserContext {
+  const authHeader = request.headers['authorization'] ?? '';
+  const handle = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : 'anonymous';
+  // The handle is *not* a UUID, so we can't write it directly to a
+  // UUID-typed column in production. The route still exercises the limiter
+  // path end-to-end in tests via this stub; the auth task will replace
+  // `user_id` with `request.user.id`.
+  return {
+    user_id: handle,
+    tier: ((request.headers['x-subscription-tier'] as SubscriptionTierId | undefined) ??
+      'free'),
+  };
+}
+
+function envelopeForCap(d: LimiterDecision): DailyCapErrorEnvelope {
+  return {
+    ok: false,
+    error: {
+      code: 'ASK_SCOUT_DAILY_CAP',
+      message: `Scout's daily question cap (${d.cap}) reached for your tier — upgrade for more, or come back after the reset.`,
+      cap: d.cap === Number.POSITIVE_INFINITY ? -1 : d.cap,
+      remaining: 0,
+      resets_at_iso: d.resets_at_iso,
+    },
+  };
+}
+
+function quotaResponseFor(d: LimiterDecision, tier: SubscriptionTierId): QuotaResponse {
+  return {
+    cap: d.cap === Number.POSITIVE_INFINITY ? 'unlimited' : d.cap,
+    count: d.count,
+    remaining: d.remaining === Infinity ? 'unlimited' : d.remaining,
+    resets_at_iso: d.resets_at_iso,
+    tier,
+  };
+}
+
+// ─── Routes ───────────────────────────────────────────────────────────────────
 
 export async function scoutAskRoutes(fastify: FastifyInstance) {
-  fastify.post<{ Body: AskBody; Reply: AskResponse }>(
+  // POST /scout/ask
+  fastify.post<{ Body: AskBody; Reply: AskResponse | DailyCapErrorEnvelope }>(
     '/scout/ask',
     {
       schema: {
@@ -111,33 +168,49 @@ export async function scoutAskRoutes(fastify: FastifyInstance) {
     },
     async (request, reply) => {
       const { question } = request.body;
+      const { user_id, tier } = resolveUserContext(request);
 
-      // Extract handle from auth header (used only for rate limiting, never sent to LLM)
-      const authHeader = request.headers['authorization'] ?? '';
-      const handle = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : 'anonymous';
-
-      // Rate limit (two layers — see definitions above)
-      const rate = checkRateLimit(handle);
-      if (rate === 'minute') {
+      // Per-minute rate limit (mash-the-button guard, in-memory).
+      if (!checkMinuteLimit(user_id)) {
         return reply.code(429).send({
           answer: "Whoa, slow down! Scout needs a breather. Try again in a minute! 🦊",
         } as AskResponse);
       }
-      if (rate === 'day') {
-        return reply.code(429).send({
-          answer: "Scout has answered a TON of your questions today — give the fox a rest until tomorrow! 🦊💤",
-        } as AskResponse);
+
+      // Per-(user, day) cap (subscription tier, persisted in Postgres).
+      // Run BEFORE invoking Anthropic so over-cap callers never burn LLM spend.
+      const decision = await checkAndIncrement(user_id, tier);
+      if (!decision.allowed) {
+        // Surface the structured envelope + advisory headers so the client
+        // can render a precise empty state without guessing.
+        reply.header('X-AskScout-Cap', String(decision.cap));
+        reply.header('X-AskScout-Remaining', '0');
+        reply.header('X-AskScout-ResetsAt', decision.resets_at_iso);
+        return reply.code(429).send(envelopeForCap(decision));
       }
 
-      // Pre-filter obvious non-sports topics
+      // Pre-filter obvious non-sports topics. These DO consume a credit
+      // (the increment happened above) — the alternative is letting kids
+      // probe the topic guard for free, which would defeat the cap.
       if (isNonSportsTopic(question)) {
+        reply.header('X-AskScout-Cap', String(decision.cap));
+        reply.header(
+          'X-AskScout-Remaining',
+          decision.remaining === Infinity ? 'unlimited' : String(decision.remaining),
+        );
         return reply.send({
-          answer: "That's not a sports question! Try asking me about your favorite team, player, or stat. 🦊",
+          answer:
+            "That's not a sports question! Try asking me about your favorite team, player, or stat. 🦊",
         });
       }
 
       try {
         const answer = await askScoutLLM(question);
+        reply.header('X-AskScout-Cap', String(decision.cap));
+        reply.header(
+          'X-AskScout-Remaining',
+          decision.remaining === Infinity ? 'unlimited' : String(decision.remaining),
+        );
         return reply.send({ answer });
       } catch (err) {
         fastify.log.error({ msg: 'Scout LLM error', err: String(err) });
@@ -147,4 +220,11 @@ export async function scoutAskRoutes(fastify: FastifyInstance) {
       }
     },
   );
+
+  // GET /scout/quota — read-only quota probe for the client UI.
+  fastify.get<{ Reply: QuotaResponse }>('/scout/quota', async (request) => {
+    const { user_id, tier } = resolveUserContext(request);
+    const decision = await getQuota(user_id, tier);
+    return quotaResponseFor(decision, tier);
+  });
 }
