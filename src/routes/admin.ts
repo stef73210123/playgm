@@ -1130,6 +1130,11 @@ const DASHBOARD_HTML = /* html */ `<!doctype html>
         \${tileHtml('ages covered', sm.ages_covered, 'within 5–14')}
         \${tileHtml('COPPA-gated', sm.coppa_gated_features, 'parent-consent <13')}
         \${tileHtml('Apple-Kids-blocked', sm.apple_kids_blocked_features, 'no override <13')}
+        <div class="tile" id="uso-tile">
+          <div class="tile-label">per-user overrides</div>
+          <div class="tile-value" id="uso-tile-value">…</div>
+          <div class="tile-sub" id="uso-tile-sub">loading</div>
+        </div>
       </div>
       <div class="kv" style="margin-top:10px;">
         <span class="k">version</span><span><code>\${esc(sm.version)}</code></span>
@@ -1138,9 +1143,18 @@ const DASHBOARD_HTML = /* html */ `<!doctype html>
         <span class="k">last edited</span><span>\${esc(relTime(sm.last_updated_iso))} · <code>\${esc(new Date(sm.last_updated_iso).toLocaleString())}</code></span>
       </div>
       <div style="margin-top:8px;">
-        <a href="/admin/edit/safety" style="color: var(--accent); text-decoration: none;">→ Open editor</a>
+        <a href="/admin/edit/safety" style="color: var(--accent); text-decoration: none;">→ Open editor</a> ·
+        <a href="/admin/edit/safety#peruser" style="color: var(--accent); text-decoration: none;" id="uso-tile-link">→ Per-user overrides</a>
       </div>
     \`;
+    // Async fetch the override summary — keeps the dashboard /admin/status
+    // call cheap (no extra DB query inline) and lets the tile populate
+    // independently of matrix-file freshness.
+    fetch('/admin/api/user-safety-overrides/summary').then(r => r.json()).then(j => {
+      if (!j || !j.ok) return;
+      const v = el('uso-tile-value'); if (v) v.textContent = j.distinct_users;
+      const s = el('uso-tile-sub');   if (s) s.textContent = j.total_overrides + ' rows · ' + j.distinct_features + ' features';
+    }).catch(() => {});
   }
 
   function renderDataPipelines(p) {

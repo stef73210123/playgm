@@ -54,9 +54,10 @@ import {
   type SafetyFeature,
   type SafetyMatrixFile,
 } from '../services/safetyMatrix.js';
+import { invalidateUserFeaturesCache } from '../services/safetyResolver.js';
 
 // ─── Project root resolution (mirrors admin.ts) ──────────────────────────
-function findProjectRoot(): string {
+export function findProjectRoot(): string {
   const cwd = process.cwd();
   const candidates = [cwd, path.resolve(cwd, '..'), path.resolve(cwd, '..', '..')];
   for (const c of candidates) {
@@ -64,7 +65,7 @@ function findProjectRoot(): string {
   }
   return cwd;
 }
-const PROJECT_ROOT = findProjectRoot();
+export const PROJECT_ROOT = findProjectRoot();
 const CARD_TEMPLATES_PATH = path.join(PROJECT_ROOT, 'data', 'cards', 'pgm_card_templates.json');
 const TRIVIA_DIR = path.join(PROJECT_ROOT, 'assets', 'challenges');
 const ADVERTISING_ACTUALS_PATH = path.join(
@@ -164,7 +165,7 @@ function isVideoUrl(v: unknown): boolean {
   return /^https:\/\/[^\s]+$/.test(v);
 }
 
-interface ValidationError {
+export interface ValidationError {
   field: string;
   message: string;
 }
@@ -444,7 +445,7 @@ async function writeTrivia(sport: TriviaSport, data: TriviaQuestion[]): Promise<
 // PROJECT_ROOT. If there's a stale .git/index.lock from a crashed previous
 // run, we clear it and retry once. We never push. Failures are logged but
 // non-fatal — the file write already succeeded.
-function autoCommit(relPath: string, subject: string): { ok: boolean; error?: string } {
+export function autoCommit(relPath: string, subject: string): { ok: boolean; error?: string } {
   if (process.env['ADMIN_EDIT_AUTOCOMMIT'] === '0') {
     return { ok: true };
   }
@@ -480,17 +481,17 @@ function autoCommit(relPath: string, subject: string): { ok: boolean; error?: st
 }
 
 // ─── Reply helpers ───────────────────────────────────────────────────────
-function badRequest(reply: FastifyReply, errors: ValidationError[]): FastifyReply {
+export function badRequest(reply: FastifyReply, errors: ValidationError[]): FastifyReply {
   reply.code(400).send({ ok: false, errors });
   return reply;
 }
 
-function notFound(reply: FastifyReply, what: string): FastifyReply {
+export function notFound(reply: FastifyReply, what: string): FastifyReply {
   reply.code(404).send({ ok: false, error: `${what} not found` });
   return reply;
 }
 
-function escHtml(s: string): string {
+export function escHtml(s: string): string {
   return s.replace(/[&<>"']/g, (c) => {
     const map: Record<string, string> = {
       '&': '&amp;',
@@ -612,6 +613,138 @@ export async function adminEditRoutes(fastify: FastifyInstance): Promise<void> {
     );
     return { ok: true, item: merged, commit };
   });
+
+  // ═══ PER-USER SAFETY OVERRIDES API ═══════════════════════════════════════
+  // These endpoints power the /admin/edit/safety "Per-User Overrides" tab
+  // and the dashboard summary tile. Persistence lives entirely in
+  // `user_safety_overrides` (Supabase) — no JSON file mutation, no auto
+  // commit. Override writes invalidate the per-user resolver cache.
+
+  /** Aggregate counts for the dashboard tile + Per-User Overrides tab
+   *  header. Cheap COUNT queries — runs every dashboard load. */
+  fastify.get('/admin/api/user-safety-overrides/summary', async (_req, reply) => {
+    const { data, error } = await supabase
+      .from('user_safety_overrides')
+      .select('user_id, feature_id');
+    if (error) {
+      reply.code(500).send({ ok: false, error: error.message });
+      return reply;
+    }
+    const rows = (data ?? []) as Array<{ user_id: string; feature_id: string }>;
+    const distinctUsers = new Set(rows.map((r) => r.user_id));
+    const distinctFeatures = new Set(rows.map((r) => r.feature_id));
+    return {
+      ok: true,
+      total_overrides: rows.length,
+      distinct_users: distinctUsers.size,
+      distinct_features: distinctFeatures.size,
+    };
+  });
+
+  /** Search users by handle / id. Paginated. The Per-User tab feeds its
+   *  search box with this and shows up to 25 hits. */
+  fastify.get('/admin/api/user-safety-overrides/users', async (req, reply) => {
+    const q = (req.query as { q?: string }).q?.trim() ?? '';
+    const PER_PAGE = 25;
+    let qb = supabase
+      .from('profiles')
+      .select('id, handle, birth_year')
+      .limit(PER_PAGE);
+    if (q.length) {
+      // Match handle prefix or exact id.
+      qb = qb.or(`handle.ilike.${q.replace(/[%_]/g, '')}%,id.eq.${q}`);
+    }
+    const { data, error } = await qb;
+    if (error) {
+      reply.code(500).send({ ok: false, error: error.message });
+      return reply;
+    }
+    return { ok: true, users: data ?? [] };
+  });
+
+  /** All overrides for one user — feeds the inline editor. */
+  fastify.get('/admin/api/user-safety-overrides/:user_id', async (req, reply) => {
+    const { user_id } = req.params as { user_id: string };
+    const { data, error } = await supabase
+      .from('user_safety_overrides')
+      .select('feature_id, enabled, reason, set_by_admin, created_at')
+      .eq('user_id', user_id);
+    if (error) {
+      reply.code(500).send({ ok: false, error: error.message });
+      return reply;
+    }
+    return { ok: true, user_id, overrides: data ?? [] };
+  });
+
+  /** Upsert one override. PATCH is idempotent — same (user_id, feature_id)
+   *  always rewrites the existing row. `enabled: null` would be ambiguous
+   *  (NULL in DB means "inherit" — which we model as no row), so we
+   *  expose DELETE as the way to remove an override and revert to matrix. */
+  fastify.patch(
+    '/admin/api/user-safety-overrides/:user_id/:feature_id',
+    async (req, reply) => {
+      const { user_id, feature_id } = req.params as {
+        user_id: string;
+        feature_id: string;
+      };
+      const body = (req.body ?? {}) as Record<string, unknown>;
+      const errs: ValidationError[] = [];
+      if (typeof body['enabled'] !== 'boolean') {
+        errs.push({ field: 'enabled', message: 'must be boolean' });
+      }
+      if (typeof body['reason'] !== 'string' || !(body['reason'] as string).trim()) {
+        // Required so we have an audit trail. Free-text but non-empty.
+        errs.push({ field: 'reason', message: 'required (audit trail)' });
+      }
+      const matrix = loadSafetyMatrix();
+      if (!matrix.features.some((f) => f.feature_id === feature_id)) {
+        errs.push({ field: 'feature_id', message: `unknown feature ${feature_id}` });
+      }
+      if (errs.length) return badRequest(reply, errs);
+
+      const setByAdmin =
+        ((req.headers['x-admin-id'] as string | undefined) ?? '').trim() || 'dashboard';
+
+      const { error } = await supabase.from('user_safety_overrides').upsert(
+        {
+          user_id,
+          feature_id,
+          enabled: body['enabled'] as boolean,
+          reason: (body['reason'] as string).trim(),
+          set_by_admin: setByAdmin,
+        },
+        { onConflict: 'user_id,feature_id' },
+      );
+      if (error) {
+        reply.code(500).send({ ok: false, error: error.message });
+        return reply;
+      }
+      invalidateUserFeaturesCache(user_id);
+      return { ok: true, user_id, feature_id, enabled: body['enabled'] };
+    },
+  );
+
+  /** Remove an override → user reverts to the age-matrix baseline. */
+  fastify.delete(
+    '/admin/api/user-safety-overrides/:user_id/:feature_id',
+    async (req, reply) => {
+      const { user_id, feature_id } = req.params as {
+        user_id: string;
+        feature_id: string;
+      };
+      const { error } = await supabase
+        .from('user_safety_overrides')
+        .delete()
+        .eq('user_id', user_id)
+        .eq('feature_id', feature_id);
+      if (error) {
+        reply.code(500).send({ ok: false, error: error.message });
+        return reply;
+      }
+      invalidateUserFeaturesCache(user_id);
+      return { ok: true, user_id, feature_id, removed: true };
+    },
+  );
 
   // ═══ ADVERTISING API ═════════════════════════════════════════════════════
   fastify.get('/admin/api/advertising/:channel_id', async (req, reply) => {
@@ -1025,7 +1158,7 @@ async function updateMetaJsonVideoUrls(
 
 // ─── HTML pages ──────────────────────────────────────────────────────────
 // Shared inline CSS — matches /admin/dashboard tokens.
-const SHARED_STYLE = /* css */ `
+export const SHARED_STYLE = /* css */ `
   :root {
     --bg: #0b0f17; --card: #131a26; --card-2: #1a2333; --text: #e6edf3;
     --muted: #8aa0b8; --accent: #6cd4ff; --green: #4ade80; --yellow: #facc15;
@@ -1089,7 +1222,7 @@ const SHARED_STYLE = /* css */ `
   }
 `;
 
-const SHARED_CRUMBS = /* html */ `
+export const SHARED_CRUMBS = /* html */ `
   <nav class="crumbs">
     <a href="/admin/dashboard">← Dashboard</a> ·
     <a href="/admin/edit/players">Players</a> ·
@@ -1097,7 +1230,15 @@ const SHARED_CRUMBS = /* html */ `
     <a href="/admin/edit/cards">Cards</a> ·
     <a href="/admin/edit/trivia">Trivia</a> ·
     <a href="/admin/edit/advertising">Advertising</a> ·
-    <a href="/admin/edit/safety">Safety matrix</a>
+    <a href="/admin/edit/safety">Safety matrix</a> ·
+    <a href="/admin/edit/packs">Packs</a> ·
+    <a href="/admin/edit/earn-rates">Earn rates</a> ·
+    <a href="/admin/edit/subscriptions">Subscriptions</a> ·
+    <a href="/admin/edit/streaks">Streaks</a> ·
+    <a href="/admin/edit/triggers">Triggers</a> ·
+    <a href="/admin/edit/stat-resolution">Stat resolution</a> ·
+    <a href="/admin/edit/pity">Pity</a> ·
+    <a href="/admin/edit/progression">Progression</a>
   </nav>
 `;
 
@@ -1754,6 +1895,20 @@ function renderSafetyPage(): string {
   details.feat .form { display: grid; grid-template-columns: 200px 1fr; gap: 6px 12px; margin-top: 8px; align-items: center; }
   details.feat .form label { color: var(--muted); font-size: 12px; }
   details.feat textarea { min-height: 56px; }
+  .tabs { display: flex; gap: 4px; margin: 4px 0 14px; border-bottom: 1px solid var(--border); }
+  .tabs button { background: transparent; border: 0; color: var(--muted); padding: 8px 14px; cursor: pointer; font-weight: 600; border-bottom: 2px solid transparent; }
+  .tabs button.active { color: var(--accent); border-bottom-color: var(--accent); }
+  .tab-panel { display: none; }
+  .tab-panel.active { display: block; }
+  details.usr { background: var(--card-2); border-radius: 8px; padding: 8px 12px; margin-top: 6px; }
+  details.usr summary { color: var(--text); font-weight: 500; }
+  table.usr-feat { width: 100%; margin-top: 8px; font-size: 12px; }
+  table.usr-feat th, table.usr-feat td { padding: 4px 8px; text-align: left; vertical-align: top; }
+  table.usr-feat .pill { display: inline-block; padding: 0 7px; border-radius: 999px; font-size: 11px; }
+  table.usr-feat .pill.matrix { background: rgba(107,114,128,.20); color: var(--muted); }
+  table.usr-feat .pill.override { background: rgba(99,102,241,.20); color: var(--accent); }
+  .uso-search-row { display: flex; gap: 8px; margin: 6px 0; }
+  .uso-search-row input { flex: 1; }
 </style>
 </head><body>
 <div class="wrap">
@@ -1765,20 +1920,37 @@ function renderSafetyPage(): string {
     Source: <code>data/safety/age_feature_matrix.json</code> · auto-commits on save (no push). ·
     Long-form rationale lives in <code>docs/gdd/age-recommendations.md</code>.
   </div>
-  <div class="legend">
-    <span class="status-pill ok">allow</span>
-    <span class="status-pill warn">moderated</span>
-    <span class="status-pill unmeas">off (parent override)</span>
-    <span class="status-pill fail">blocked (statutory floor)</span>
+
+  <div class="tabs" id="safety-tabs">
+    <button class="active" data-tab="matrix">Age Matrix</button>
+    <button data-tab="peruser">Per-User Overrides</button>
   </div>
-  <div id="meta" class="muted">Loading…</div>
-  <div class="card-block" id="matrix-grid-card">
-    <table class="matrix" id="matrix-grid">
-      <thead><tr id="matrix-grid-head"></tr></thead>
-      <tbody></tbody>
-    </table>
+
+  <div class="tab-panel active" id="tab-matrix">
+    <div class="legend">
+      <span class="status-pill ok">allow</span>
+      <span class="status-pill warn">moderated</span>
+      <span class="status-pill unmeas">off (parent override)</span>
+      <span class="status-pill fail">blocked (statutory floor)</span>
+    </div>
+    <div id="meta" class="muted">Loading…</div>
+    <div class="card-block" id="matrix-grid-card">
+      <table class="matrix" id="matrix-grid">
+        <thead><tr id="matrix-grid-head"></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+    <div id="features-list"></div>
   </div>
-  <div id="features-list"></div>
+
+  <div class="tab-panel" id="tab-peruser">
+    <div id="uso-summary" class="muted">Loading override summary…</div>
+    <div class="uso-search-row">
+      <input id="uso-search" type="search" placeholder="search users by handle or paste a UUID" />
+      <button class="btn primary" id="uso-search-btn">Search</button>
+    </div>
+    <div id="uso-results"></div>
+  </div>
 </div>
 <script>${SAFETY_JS}</script>
 </body></html>`;
@@ -1890,6 +2062,174 @@ const SAFETY_JS = /* javascript */ `
     status.innerHTML = '<span class="ok">saved · ' + (json.commit && json.commit.ok ? 'committed' : 'no commit') + '</span>';
     setTimeout(() => { status.textContent = ''; load(); }, 1600);
   }
+
+  // ─── Tab switcher ──────────────────────────────────────────────────────
+  document.querySelectorAll('#safety-tabs button').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('#safety-tabs button').forEach(b => b.classList.remove('active'));
+      document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+      btn.classList.add('active');
+      const target = document.getElementById('tab-' + btn.dataset.tab);
+      if (target) target.classList.add('active');
+      if (btn.dataset.tab === 'peruser' && !window.__usoBootstrapped) {
+        window.__usoBootstrapped = true;
+        usoLoadSummary();
+      }
+    });
+  });
+
+  // ─── Per-user overrides ────────────────────────────────────────────────
+  // Loads matrix once, caches it, then for each searched user pulls their
+  // overrides + computes the per-feature effective view client-side using
+  // the same decideForAge() above. Save round-trips via PATCH.
+  let __matrixCache = null;
+  async function ensureMatrix() {
+    if (__matrixCache) return __matrixCache;
+    const res = await fetch('/admin/api/safety-matrix');
+    const json = await res.json();
+    if (!json.ok) throw new Error(json.error || 'matrix load failed');
+    __matrixCache = json;
+    return json;
+  }
+
+  async function usoLoadSummary() {
+    const res = await fetch('/admin/api/user-safety-overrides/summary');
+    const json = await res.json();
+    if (!json.ok) {
+      el('uso-summary').innerHTML = '<span class="err">' + esc(json.error || 'failed') + '</span>';
+      return;
+    }
+    el('uso-summary').innerHTML =
+      '<strong>' + esc(json.distinct_users) + '</strong> users with overrides ' +
+      '· <strong>' + esc(json.total_overrides) + '</strong> rows ' +
+      '· across <strong>' + esc(json.distinct_features) + '</strong> features';
+  }
+
+  function birthYearToAge(by) {
+    if (by == null) return null;
+    return new Date().getFullYear() - by;
+  }
+
+  function decisionForUser(feature, age, overrideRow) {
+    if (overrideRow) return overrideRow.enabled ? 'allow' : 'blocked';
+    if (age == null) return 'blocked';
+    return decideForAge(feature, age);
+  }
+
+  async function usoSearch() {
+    const q = el('uso-search').value.trim();
+    const url = '/admin/api/user-safety-overrides/users' + (q ? '?q=' + encodeURIComponent(q) : '');
+    const res = await fetch(url);
+    const json = await res.json();
+    if (!json.ok) {
+      el('uso-results').innerHTML = '<span class="err">' + esc(json.error || 'failed') + '</span>';
+      return;
+    }
+    if (!(json.users || []).length) {
+      el('uso-results').innerHTML = '<div class="muted">no users found</div>';
+      return;
+    }
+    el('uso-results').innerHTML = json.users.map(u =>
+      '<details class="usr" data-uid="' + esc(u.id) + '">' +
+        '<summary><strong>' + esc(u.handle || '(no handle)') + '</strong> · <code>' + esc(u.id) + '</code> · age ' + esc(birthYearToAge(u.birth_year) ?? '?') + '</summary>' +
+        '<div class="uso-body">loading…</div>' +
+      '</details>'
+    ).join('');
+    document.querySelectorAll('details.usr').forEach(d => {
+      d.addEventListener('toggle', () => {
+        if (d.open && !d.dataset.loaded) {
+          d.dataset.loaded = '1';
+          renderUserBody(d);
+        }
+      });
+    });
+  }
+
+  async function renderUserBody(detailsEl) {
+    const userId = detailsEl.dataset.uid;
+    const body = detailsEl.querySelector('.uso-body');
+    const matrix = await ensureMatrix();
+    const userRes = await fetch('/admin/api/user-safety-overrides/' + encodeURIComponent(userId));
+    const userJson = await userRes.json();
+    if (!userJson.ok) {
+      body.innerHTML = '<span class="err">' + esc(userJson.error || 'failed') + '</span>';
+      return;
+    }
+    const overrideMap = new Map();
+    for (const o of (userJson.overrides || [])) overrideMap.set(o.feature_id, o);
+    // Pull age from the user list above
+    const summarySpan = detailsEl.querySelector('summary');
+    const ageMatch = summarySpan.textContent.match(/age (\\d+|\\?)/);
+    const age = ageMatch && ageMatch[1] !== '?' ? parseInt(ageMatch[1], 10) : null;
+
+    const rows = matrix.features.map(f => {
+      const override = overrideMap.get(f.feature_id);
+      const baseline = age != null ? decideForAge(f, age) : 'blocked';
+      const effective = decisionForUser(f, age, override);
+      const source = override ? 'override' : 'matrix';
+      const reason = override ? (override.reason || '') : '';
+      return (
+        '<tr data-fid="' + esc(f.feature_id) + '">' +
+          '<td><code>' + esc(f.feature_id) + '</code><br><span class="muted">' + esc(f.label) + '</span></td>' +
+          '<td><span class="pill ' + classFor(baseline) + '">' + esc(baseline) + '</span></td>' +
+          '<td>' +
+            '<select class="f-mode">' +
+              '<option value="inherit"' + (override ? '' : ' selected') + '>inherit (matrix)</option>' +
+              '<option value="allow"'   + (override && override.enabled ? ' selected' : '') + '>allow</option>' +
+              '<option value="block"'   + (override && !override.enabled ? ' selected' : '') + '>block</option>' +
+            '</select>' +
+          '</td>' +
+          '<td><input class="f-reason" placeholder="reason (required if overriding)" value="' + esc(reason) + '" /></td>' +
+          '<td><span class="pill ' + (source === 'override' ? 'override' : 'matrix') + '">' + esc(effective) + '</span></td>' +
+          '<td><button class="btn primary save-uso">Save</button> <span class="uso-status hint"></span></td>' +
+        '</tr>'
+      );
+    }).join('');
+    body.innerHTML =
+      '<table class="usr-feat"><thead><tr>' +
+        '<th>feature</th><th>matrix baseline</th><th>override</th><th>reason</th><th>effective</th><th></th>' +
+      '</tr></thead><tbody>' + rows + '</tbody></table>';
+    body.querySelectorAll('button.save-uso').forEach(b => b.addEventListener('click', (ev) => saveUso(ev, userId)));
+  }
+
+  async function saveUso(ev, userId) {
+    const tr = ev.target.closest('tr');
+    const fid = tr.dataset.fid;
+    const mode = tr.querySelector('.f-mode').value;
+    const reason = tr.querySelector('.f-reason').value.trim();
+    const status = tr.querySelector('.uso-status');
+    if (mode === 'inherit') {
+      status.textContent = 'reverting…';
+      const res = await fetch('/admin/api/user-safety-overrides/' + encodeURIComponent(userId) + '/' + encodeURIComponent(fid), { method: 'DELETE' });
+      const json = await res.json();
+      if (!res.ok || !json.ok) {
+        status.innerHTML = '<span class="err">' + esc(json.error || 'error') + '</span>';
+        return;
+      }
+      status.innerHTML = '<span class="ok">reverted</span>';
+    } else {
+      if (!reason) {
+        status.innerHTML = '<span class="err">reason required</span>';
+        return;
+      }
+      const enabled = mode === 'allow';
+      status.textContent = 'saving…';
+      const res = await fetch('/admin/api/user-safety-overrides/' + encodeURIComponent(userId) + '/' + encodeURIComponent(fid), {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled, reason }),
+      });
+      const json = await res.json();
+      if (!res.ok || !json.ok) {
+        status.innerHTML = '<span class="err">' + esc((json.errors||[]).map(e=>e.field+': '+e.message).join(', ') || json.error || 'error') + '</span>';
+        return;
+      }
+      status.innerHTML = '<span class="ok">saved</span>';
+    }
+    setTimeout(() => { status.textContent = ''; usoLoadSummary(); }, 1500);
+  }
+
+  el('uso-search-btn').addEventListener('click', usoSearch);
+  el('uso-search').addEventListener('keydown', (ev) => { if (ev.key === 'Enter') usoSearch(); });
 
   load();
 })();
