@@ -32,6 +32,7 @@ import {
 import { getEconomicMetrics } from '../services/economicMetrics.js';
 import { getEconomicTargets } from '../services/economicTargets.js';
 import { getAdvertisingReport } from '../services/advertising.js';
+import { getDataPipelinesStatus } from '../jobs/refreshStats.js';
 
 function findProjectRoot(): string {
   const cwd = process.cwd();
@@ -240,6 +241,7 @@ export async function adminRoutes(fastify: FastifyInstance): Promise<void> {
       economic_metrics: economicMetrics,
       economic_targets: economicTargets,
       advertising,
+      data_pipelines: getDataPipelinesStatus(),
     };
   });
 
@@ -465,6 +467,16 @@ const DASHBOARD_HTML = /* html */ `<!doctype html>
     <div id="ad-channels-body">Loading…</div>
   </div>
 
+  <h2 style="margin: 28px 0 12px; font-size: 16px; letter-spacing: 0.4px; color: var(--accent); text-transform: uppercase;">Data Pipelines</h2>
+  <div class="card" id="data-pipelines-card">
+    <h2>Per-League Refresh Status</h2>
+    <div id="data-pipelines-body">Loading…</div>
+  </div>
+  <div class="card" id="ratings-distribution-card">
+    <h2>Rating Distribution</h2>
+    <div id="ratings-distribution-body">Loading…</div>
+  </div>
+
   <div class="card" id="routes-card">
     <h2>Internal Routes</h2>
     <details>
@@ -658,6 +670,9 @@ const DASHBOARD_HTML = /* html */ `<!doctype html>
 
     // ─── Advertising ─────────────────────────────────────────────────────
     renderAdvertising(s.advertising || {});
+
+    // ─── Data Pipelines (live ingestion) ─────────────────────────────────
+    renderDataPipelines(s.data_pipelines || {});
 
     // Routes
     const routes = s.internal_routes || [];
@@ -1036,6 +1051,65 @@ const DASHBOARD_HTML = /* html */ `<!doctype html>
           \${c.last_updated_iso ? '<div class="muted" style="margin-top:6px;">last update: ' + esc(relTime(c.last_updated_iso)) + '</div>' : '<div class="muted" style="margin-top:6px;">last update: —</div>'}
         </div>\`;
       }).join('') + '</div>';
+  }
+
+  function renderDataPipelines(p) {
+    const pipelines = p.pipelines || {};
+    const cron = p.cron_schedule || {};
+    const leagues = ['nfl','nba','mlb','nhl','mls'];
+    const fmtPct = v => (v == null ? '—' : (v * 100).toFixed(1) + '%');
+    const rows = leagues.map(L => {
+      const e = pipelines[L] || {};
+      const lastRun = e.lastRunAt ? \`<code>\${esc(new Date(e.lastRunAt).toLocaleString())}</code> · <span class="muted">\${esc(relTime(e.lastRunAt))}</span>\` : '<span class="tag unmeasured">never</span>';
+      const lastSucc = e.lastSuccessAt ? \`<code>\${esc(new Date(e.lastSuccessAt).toLocaleString())}</code> · <span class="muted">\${esc(relTime(e.lastSuccessAt))}</span>\` : '<span class="tag unmeasured">never</span>';
+      const sr = typeof e.successRate24h === 'number' ? fmtPct(e.successRate24h) : '—';
+      return \`<tr>
+        <td><strong>\${esc(L.toUpperCase())}</strong></td>
+        <td>\${lastRun}</td>
+        <td>\${lastSucc}</td>
+        <td>\${esc(String(e.playerCount ?? 0))}</td>
+        <td>\${sr} <span class="muted">(\${(e.recent24h && e.recent24h.successes) || 0}✓ / \${(e.recent24h && e.recent24h.failures) || 0}✗)</span></td>
+      </tr>\`;
+    }).join('');
+    el('data-pipelines-body').innerHTML = \`
+      <div class="muted" style="margin-bottom:6px;">cron: <code>\${esc(cron.daily || '—')}</code> · hourly: <code>\${esc(cron.hourly || '—')}</code> · tz: <code>\${esc(cron.tz || '—')}</code></div>
+      <table>
+        <thead><tr><th>League</th><th>Last Run</th><th>Last Success</th><th>Players</th><th>24h Success Rate</th></tr></thead>
+        <tbody>\${rows}</tbody>
+      </table>
+    \`;
+
+    // Lazy-load /admin/ratings/distribution for the histogram below.
+    fetch('/admin/ratings/distribution').then(r => r.json()).then(data => {
+      const dist = data.distribution || {};
+      const tiers = data.tiers || ['elite','strong','solid','role','deep_bench'];
+      const bg = { elite: '#D4AF37', strong: '#3B82F6', solid: '#10B981', role: '#9CA3AF', deep_bench: '#6B7280' };
+      let html = '<div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(180px, 1fr));gap:10px;">';
+      for (const L of leagues) {
+        const d = dist[L] || {};
+        const total = tiers.reduce((s, t) => s + (d[t] || 0), 0);
+        const max = Math.max(1, ...tiers.map(t => d[t] || 0));
+        const bars = tiers.map(t => {
+          const v = d[t] || 0;
+          const pct = (v / max) * 100;
+          return '<div style="margin:2px 0;display:flex;align-items:center;gap:6px;">' +
+            '<span style="width:64px;font-size:10px;color:var(--muted);text-transform:uppercase;">' + esc(t.replace('_',' ')) + '</span>' +
+            '<div style="flex:1;background:var(--bg);height:14px;border-radius:3px;overflow:hidden;">' +
+              '<div style="height:100%;background:' + bg[t] + ';width:' + pct + '%;"></div>' +
+            '</div>' +
+            '<span style="width:36px;text-align:right;font-size:11px;">' + v + '</span>' +
+          '</div>';
+        }).join('');
+        html += \`<div class="card" style="margin:0;">
+          <strong>\${esc(L.toUpperCase())}</strong> <span class="muted">(\${total} rated)</span>
+          <div style="margin-top:6px;">\${bars}</div>
+        </div>\`;
+      }
+      html += '</div>';
+      el('ratings-distribution-body').innerHTML = html;
+    }).catch(() => {
+      el('ratings-distribution-body').innerHTML = '<span class="tag unmeasured">distribution endpoint failed</span>';
+    });
   }
 
   function formatUptime(s) {
