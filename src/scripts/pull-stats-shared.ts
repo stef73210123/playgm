@@ -11,6 +11,7 @@ import { existsSync, mkdirSync, renameSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { EspnAdapter } from '../services/stats/espnAdapter.js';
 import { getStatsAdapter } from '../services/stats/index.js';
+import { supabase } from '../db/client.js';
 import type { League, RosterEntry } from '../services/stats/types.js';
 
 /**
@@ -264,5 +265,62 @@ export async function pullLeague(
   writeCacheAtomic(opts.outFile, cache);
   // eslint-disable-next-line no-console
   console.log(`[pull:${league}] wrote ${kept.length} players → ${opts.outFile}`);
+
+  // Best-effort dual write to Supabase player_stats. Never fails the pull.
+  await dualWritePlayerStats(league, String(opts.season), kept);
+
   return cache;
+}
+
+/**
+ * Best-effort upsert of the cleaned player set into Supabase `player_stats`.
+ *
+ * - Uses the service-role client from `db/client.ts`.
+ * - Requires the v1 stats schema (player_stats(player_id, sport, season,
+ *   stats_json, fetched_at) — see migrations/001_v1_schema.sql).
+ * - Logs and returns on error; the JSON cache remains source of truth.
+ */
+export async function dualWritePlayerStats(
+  league: League,
+  season: string,
+  players: PlayerCacheEntry[],
+): Promise<void> {
+  if (process.env.SKIP_SUPABASE_DUAL_WRITE === '1') {
+    // eslint-disable-next-line no-console
+    console.log('[supabase] dual-write skipped (SKIP_SUPABASE_DUAL_WRITE=1)');
+    return;
+  }
+  if (players.length === 0) return;
+  const fetched_at = new Date().toISOString();
+  const rows = players.map((p) => ({
+    player_id: p.external_id,
+    sport: league,
+    season,
+    stats_json: p.stats,
+    fetched_at,
+  }));
+
+  // Chunk to keep the request body reasonable (~1000 rows each).
+  const CHUNK = 1000;
+  let upserted = 0;
+  for (let i = 0; i < rows.length; i += CHUNK) {
+    const slice = rows.slice(i, i + CHUNK);
+    try {
+      const { error } = await supabase
+        .from('player_stats')
+        .upsert(slice, { onConflict: 'player_id,sport,season' });
+      if (error) {
+        // eslint-disable-next-line no-console
+        console.error(`[supabase] upsert failed (chunk ${i}/${rows.length}):`, error.message);
+        return;
+      }
+      upserted += slice.length;
+    } catch (e) {
+      // eslint-disable-next-line no-console
+      console.error('[supabase] upsert threw:', e instanceof Error ? e.message : String(e));
+      return;
+    }
+  }
+  // eslint-disable-next-line no-console
+  console.log(`[supabase] upserted ${upserted} rows into player_stats (${league} ${season})`);
 }
