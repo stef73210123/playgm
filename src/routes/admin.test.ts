@@ -118,6 +118,25 @@ describe('admin routes', () => {
       const routes = body['internal_routes'] as Array<{ path: string }>;
       expect(routes.some((r) => r.path === '/health')).toBe(true);
       expect(routes.some((r) => r.path === '/admin/status')).toBe(true);
+      // New keys from the Economic Metrics extension.
+      expect(body['economic_metrics']).toEqual(
+        expect.objectContaining({
+          pp: expect.any(Object),
+          packs: expect.any(Object),
+          cards: expect.any(Object),
+          subscriptions: expect.any(Object),
+          rosters: expect.any(Object),
+          trivia_picks: expect.any(Object),
+          retention: expect.any(Object),
+        }),
+      );
+      expect(body['economic_targets']).toEqual(
+        expect.objectContaining({
+          pp: expect.any(Object),
+          cards: expect.any(Object),
+          business: expect.any(Object),
+        }),
+      );
     } finally {
       await app.close();
     }
