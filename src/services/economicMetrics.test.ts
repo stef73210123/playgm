@@ -68,6 +68,18 @@ describe('economicMetrics', () => {
         rosters: expect.any(Object),
         trivia_picks: expect.any(Object),
         retention: expect.any(Object),
+        ask_scout: expect.any(Object),
+      }),
+    );
+    // Ask Scout block — calls_24h_by_tier should always carry the 4-tier shape
+    expect(m.ask_scout).toEqual(
+      expect.objectContaining({
+        calls_24h: expect.any(Object),
+        calls_24h_by_tier: expect.any(Object),
+        cap_hit_rate_24h_by_tier: expect.any(Object),
+        free_users_capped_today: expect.any(Object),
+        estimated_anthropic_spend_24h_usd: expect.any(Object),
+        cost_per_paid_seat_24h_usd: expect.any(Object),
       }),
     );
     // PP section keys

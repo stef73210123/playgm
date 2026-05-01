@@ -103,6 +103,21 @@ export interface RetentionMetrics {
   d30_retention: CountResult;
 }
 
+export interface AskScoutMetrics {
+  /** All Ask Scout calls in the last 24h. */
+  calls_24h: CountResult;
+  /** 24h calls bucketed by subscription tier. */
+  calls_24h_by_tier: DistributionResult;
+  /** % of 24h-calls that hit the per-tier daily cap, by tier. */
+  cap_hit_rate_24h_by_tier: DistributionResult;
+  /** Free-tier users who hit their cap today. Conversion-funnel KPI. */
+  free_users_capped_today: CountResult;
+  /** Estimated 24h Anthropic spend (Haiku 4.5 pricing × avg tokens). */
+  estimated_anthropic_spend_24h_usd: CountResult;
+  /** Spend / paid seats. Useful sanity-check for ARPPU vs LLM cost. */
+  cost_per_paid_seat_24h_usd: CountResult;
+}
+
 export interface EconomicMetricsReport {
   pp: PpMetrics;
   packs: PackMetrics;
@@ -111,6 +126,7 @@ export interface EconomicMetricsReport {
   rosters: RosterMetrics;
   trivia_picks: TriviaPicksMetrics;
   retention: RetentionMetrics;
+  ask_scout: AskScoutMetrics;
 }
 
 interface Cache<T> { value: T; expires_at: number }
@@ -659,6 +675,149 @@ async function buildRetentionMetrics(): Promise<RetentionMetrics> {
   };
 }
 
+// ─── Ask Scout block ──────────────────────────────────────────────────────
+// Anthropic Haiku 4.5 published pricing (May 2026):
+//   input  $0.0008 per 1K tokens
+//   output $0.004  per 1K tokens
+// Typical Ask Scout exchange (rough fixture from production traces):
+//   ~600 input tokens (system prompt + question)
+//   ~150 output tokens (Scout's answer; capped at max_tokens=220)
+// Per-call cost ≈ (600/1000)*0.0008 + (150/1000)*0.004
+//               ≈ 0.00048 + 0.00060 = $0.00108
+// Constants are baked in for v1 — no runtime fetch, no per-call telemetry yet.
+const HAIKU_INPUT_USD_PER_1K = 0.0008;
+const HAIKU_OUTPUT_USD_PER_1K = 0.004;
+const ASK_SCOUT_AVG_INPUT_TOKENS = 600;
+const ASK_SCOUT_AVG_OUTPUT_TOKENS = 150;
+const ASK_SCOUT_COST_PER_CALL_USD =
+  (ASK_SCOUT_AVG_INPUT_TOKENS / 1000) * HAIKU_INPUT_USD_PER_1K +
+  (ASK_SCOUT_AVG_OUTPUT_TOKENS / 1000) * HAIKU_OUTPUT_USD_PER_1K;
+
+function loadAskScoutCapByTier(): Record<string, number> {
+  try {
+    const raw = JSON.parse(
+      readFileSync(path.join(PROJECT_ROOT, 'data', 'economy', 'pgm_subscriptions.json'), 'utf8'),
+    ) as { tiers: Array<{ tier_id: string; ask_scout_daily_cap?: number }> };
+    const out: Record<string, number> = {};
+    for (const t of raw.tiers ?? []) {
+      out[t.tier_id] = typeof t.ask_scout_daily_cap === 'number' ? t.ask_scout_daily_cap : 0;
+    }
+    return out;
+  } catch {
+    return { free: 2, starter: 5, playmaker: 10, champion: 20 };
+  }
+}
+
+async function buildAskScoutMetrics(
+  paidUserCount: number | null,
+): Promise<AskScoutMetrics> {
+  const caps = loadAskScoutCapByTier();
+  const since24h = isoSinceHours(24);
+  const todayYmd = new Date().toISOString().slice(0, 10);
+
+  // Pull (user_id, count) rows once, bucket client-side. RLS bypassed via
+  // service-role client.
+  const usageRes = await (async () => {
+    try {
+      const { data, error } = await supabase
+        .from('ask_scout_usage')
+        .select('user_id, count, last_request_at, ymd')
+        .gte('last_request_at', since24h);
+      if (error) {
+        const missing = isMissingTableError(error.message);
+        return { rows: null as null, error: error.message, unmeasured: missing };
+      }
+      return { rows: (data ?? []) as Array<{ user_id: string; count: number; ymd: string }> };
+    } catch (err) {
+      return {
+        rows: null as null,
+        error: err instanceof Error ? err.message : String(err),
+        unmeasured: true,
+      };
+    }
+  })();
+
+  // If the usage table is missing or unreachable, surface the whole block
+  // as unmeasured — but still report the deterministic cost-per-call constant
+  // so the dashboard's cost panel renders something sensible.
+  if (!usageRes.rows) {
+    const note = usageRes.error ?? 'ask_scout_usage unmeasured';
+    return {
+      calls_24h: unmeasured(note),
+      calls_24h_by_tier: unmeasuredDist(note),
+      cap_hit_rate_24h_by_tier: unmeasuredDist(note),
+      free_users_capped_today: unmeasured(note),
+      estimated_anthropic_spend_24h_usd: unmeasured(note),
+      cost_per_paid_seat_24h_usd: unmeasured(note),
+    };
+  }
+
+  // Map user_id → tier (best-effort; no JOIN with profiles to keep this cheap).
+  const userIds = Array.from(new Set(usageRes.rows.map((r) => r.user_id))).filter(Boolean);
+  const tierByUser = new Map<string, string>();
+  if (userIds.length > 0) {
+    try {
+      const { data, error } = await supabase
+        .from('profiles')
+        .select('id, subscription_tier')
+        .in('id', userIds);
+      if (!error && data) {
+        for (const row of data as Array<{ id: string; subscription_tier: string }>) {
+          tierByUser.set(row.id, row.subscription_tier ?? 'free');
+        }
+      }
+    } catch {
+      // Tier lookup is best-effort — fall back to 'free' below.
+    }
+  }
+
+  // Bucket calls by tier. `count` in ask_scout_usage is the per-day cumulative
+  // value, but rows touched in the last 24h represent the day's full activity
+  // for the (user, ymd) pair, which is the right unit for "calls today".
+  const callsByTier: Record<string, number> = { free: 0, starter: 0, playmaker: 0, champion: 0 };
+  const cappedByTier: Record<string, number> = { free: 0, starter: 0, playmaker: 0, champion: 0 };
+  const totalsByTier: Record<string, number> = { free: 0, starter: 0, playmaker: 0, champion: 0 };
+  let totalCalls = 0;
+  let freeCappedToday = 0;
+
+  for (const row of usageRes.rows) {
+    const tier = tierByUser.get(row.user_id) ?? 'free';
+    const count = typeof row.count === 'number' ? row.count : 0;
+    const cap = caps[tier] ?? 0;
+    callsByTier[tier] = (callsByTier[tier] ?? 0) + count;
+    totalsByTier[tier] = (totalsByTier[tier] ?? 0) + 1;
+    if (cap > 0 && count >= cap) {
+      cappedByTier[tier] = (cappedByTier[tier] ?? 0) + 1;
+      if (tier === 'free' && row.ymd === todayYmd) freeCappedToday += 1;
+    }
+    totalCalls += count;
+  }
+
+  const capHitRate: Record<string, number> = {};
+  for (const tier of ['free', 'starter', 'playmaker', 'champion']) {
+    const total = totalsByTier[tier] ?? 0;
+    capHitRate[tier] =
+      total === 0 ? 0 : Math.round(((cappedByTier[tier] ?? 0) / total) * 1000) / 10;
+  }
+
+  const spendUsd = Math.round(totalCalls * ASK_SCOUT_COST_PER_CALL_USD * 10000) / 10000;
+  let costPerPaidSeat: CountResult;
+  if (paidUserCount && paidUserCount > 0) {
+    costPerPaidSeat = { value: Math.round((spendUsd / paidUserCount) * 10000) / 10000 };
+  } else {
+    costPerPaidSeat = { value: spendUsd }; // degenerate: no paid users yet
+  }
+
+  return {
+    calls_24h: { value: totalCalls },
+    calls_24h_by_tier: { value: callsByTier },
+    cap_hit_rate_24h_by_tier: { value: capHitRate },
+    free_users_capped_today: { value: freeCappedToday },
+    estimated_anthropic_spend_24h_usd: { value: spendUsd },
+    cost_per_paid_seat_24h_usd: costPerPaidSeat,
+  };
+}
+
 // ─── Main entry ───────────────────────────────────────────────────────────
 
 export async function getEconomicMetrics(): Promise<EconomicMetricsReport> {
@@ -702,6 +861,15 @@ export async function getEconomicMetrics(): Promise<EconomicMetricsReport> {
     buildRetentionMetrics(),
   ]);
 
+  // Ask Scout LLM usage block. Sized off paid seats (excludes free) so
+  // cost_per_paid_seat is a meaningful denominator — free users contribute
+  // to spend but not to revenue.
+  const subDist = subscriptions.by_tier?.value ?? null;
+  const paidSeats = subDist
+    ? (subDist['starter'] ?? 0) + (subDist['playmaker'] ?? 0) + (subDist['champion'] ?? 0)
+    : null;
+  const askScout = await buildAskScoutMetrics(paidSeats);
+
   const report: EconomicMetricsReport = {
     pp,
     packs,
@@ -710,6 +878,7 @@ export async function getEconomicMetrics(): Promise<EconomicMetricsReport> {
     rosters,
     trivia_picks: triviaPicks,
     retention,
+    ask_scout: askScout,
   };
 
   metricsCache = { value: report, expires_at: Date.now() + CACHE_TTL_MS };

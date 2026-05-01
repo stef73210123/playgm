@@ -467,6 +467,10 @@ const DASHBOARD_HTML = /* html */ `<!doctype html>
       <h2>Subscription Mix</h2>
       <div id="econ-subs-body">Loading…</div>
     </div>
+    <div class="card" id="econ-askscout-card">
+      <h2>Ask Scout Usage</h2>
+      <div id="econ-askscout-body">Loading…</div>
+    </div>
     <div class="card" id="econ-rosters-card">
       <h2>Roster Activity</h2>
       <div id="econ-rosters-body">Loading…</div>
@@ -857,6 +861,43 @@ const DASHBOARD_HTML = /* html */ `<!doctype html>
       </div>
       <div style="margin-top:10px;color:var(--muted);font-size:12px;">tier mix</div>
       <div style="margin-top:6px;">\${subRows}</div>
+    \`;
+
+    // ── Ask Scout Usage ────────────────────────────────────────────────
+    // The cap-hit rate per tier is the primary upgrade-pressure signal.
+    // free_users_capped_today is the conversion-funnel KPI we'll watch
+    // as Free→Starter conversions ship.
+    const ask = m.ask_scout || {};
+    const askByTier = (ask.calls_24h_by_tier && ask.calls_24h_by_tier.value) || {};
+    const capHit = (ask.cap_hit_rate_24h_by_tier && ask.cap_hit_rate_24h_by_tier.value) || {};
+    const askTiers = ['free','starter','playmaker','champion'];
+    const askMax = Math.max(1, ...askTiers.map(t => askByTier[t] ?? 0));
+    const askRows = ask.calls_24h_by_tier && ask.calls_24h_by_tier.unmeasured
+      ? '<abbr title="' + esc(ask.calls_24h_by_tier.error || '') + '"><span class="tag unmeasured">unmeasured</span></abbr>'
+      : askTiers.map(t => {
+          const v = askByTier[t] ?? 0;
+          const hit = capHit[t];
+          const hitStr = (hit != null) ? ' · ' + hit.toFixed(1) + '% cap-hit' : '';
+          return miniBar(t, v, askMax, v + hitStr);
+        }).join('');
+    const freeCapped = metricVal(ask.free_users_capped_today);
+    const freeCappedHtml = freeCapped == null
+      ? '<abbr title="' + esc(ask.free_users_capped_today && ask.free_users_capped_today.error || '') + '"><span class="tag unmeasured">unmeasured</span></abbr>'
+      : (freeCapped > 0
+          ? '<span style="color:var(--accent);font-weight:600;">' + freeCapped + ' Free users hit cap today — conversion target 🎯</span>'
+          : '<span style="color:var(--muted);">0 Free users at cap today</span>');
+    el('econ-askscout-body').innerHTML = \`
+      <div class="tile-grid">
+        \${tileHtml('calls 24h', ask.calls_24h)}
+        \${tileHtml('Anthropic spend 24h', ask.estimated_anthropic_spend_24h_usd, ' USD')}
+        \${tileHtml('cost / paid seat 24h', ask.cost_per_paid_seat_24h_usd, ' USD')}
+      </div>
+      <div style="margin-top:10px;color:var(--muted);font-size:12px;">calls by tier (24h) · cap-hit rate</div>
+      <div style="margin-top:6px;">\${askRows}</div>
+      <div class="kv" style="margin-top:8px;">
+        <span class="k">free users at cap today</span>
+        <span>\${freeCappedHtml}</span>
+      </div>
     \`;
 
     // ── Rosters ─────────────────────────────────────────────────────────
