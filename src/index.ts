@@ -23,6 +23,7 @@ import { subscriptionRoutes } from './routes/subscriptions.js';
 import { practiceDraftRoutes } from './routes/practiceDrafts.js';
 import { leaderboardRoutes } from './routes/leaderboard.js';
 import { scoutVoiceRoutes } from './routes/scoutVoice.js';
+import { adminRoutes, installRouteTracker } from './routes/admin.js';
 
 const PORT = Number(process.env.PORT ?? 3001);
 const HOST = '0.0.0.0';
@@ -51,6 +52,11 @@ await server.register(cors, {
 server.addContentTypeParser(/^multipart\/.*/, { parseAs: 'buffer', bodyLimit: 25 * 1024 * 1024 },
   (_req, body, done) => done(null, body));
 
+// ─── Route tracker ───────────────────────────────────────────────────────────
+// Must be installed BEFORE any route registration so /admin/status can list
+// every endpoint the server exposes.
+installRouteTracker(server);
+
 // ─── Health ──────────────────────────────────────────────────────────────────
 
 server.get('/health', async () => {
@@ -76,6 +82,7 @@ await server.register(subscriptionRoutes, { prefix: '/' });
 await server.register(practiceDraftRoutes, { prefix: '/' });
 await server.register(leaderboardRoutes, { prefix: '/' });
 await server.register(scoutVoiceRoutes, { prefix: '/' });
+await server.register(adminRoutes, { prefix: '/' });
 
 // ─── Start ───────────────────────────────────────────────────────────────────
 
