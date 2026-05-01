@@ -431,4 +431,37 @@ CREATE INDEX IF NOT EXISTS idx_player_ratings_sport_tier
 COMMENT ON TABLE player_stats     IS 'Per-player season stats keyed by (player_id, sport, season). Source: jobs/refreshStats.ts.';
 COMMENT ON TABLE player_ratings   IS 'Per-player tier rating (elite/strong/solid/role/deep_bench) computed from player_stats.';
 
+-- ============================================================================
+-- SECTION: Ask Scout per-day usage (LLM cap enforcement)
+-- ============================================================================
+-- One row per (user_id, UTC ymd). The /scout/ask route increments via UPSERT
+-- before invoking Anthropic; rejections beyond the per-tier cap (see
+-- data/economy/pgm_subscriptions.json#ask_scout_daily_cap) never consume a
+-- credit. Rows persist past the day for /admin/status analytics.
+
+CREATE TABLE IF NOT EXISTS ask_scout_usage (
+  id              BIGSERIAL    PRIMARY KEY,
+  user_id         UUID         NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+  ymd             DATE         NOT NULL,                          -- yyyy-mm-dd in UTC
+  count           INTEGER      NOT NULL DEFAULT 0,
+  last_request_at TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+  CONSTRAINT uq_ask_scout_usage_user_day UNIQUE (user_id, ymd)
+);
+
+CREATE INDEX IF NOT EXISTS ix_ask_scout_usage_user
+  ON ask_scout_usage (user_id);
+-- BRIN on ymd for cheap "last 24h" / "last 30d" admin scans.
+CREATE INDEX IF NOT EXISTS ix_ask_scout_usage_ymd_brin
+  ON ask_scout_usage USING BRIN (ymd);
+
+ALTER TABLE ask_scout_usage ENABLE ROW LEVEL SECURITY;
+DO $$ BEGIN
+  CREATE POLICY ask_scout_usage_select_own ON ask_scout_usage
+    FOR SELECT USING (auth.uid() = user_id);
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+-- Writes go through the service role (bypasses RLS), same pattern as
+-- pp_events / card_inventory.
+
+COMMENT ON TABLE ask_scout_usage IS 'Per-(user, UTC day) Ask Scout LLM call counts. Authoritative source for the daily cap enforced in server/src/services/askScoutLimiter.ts.';
+
 COMMIT;
