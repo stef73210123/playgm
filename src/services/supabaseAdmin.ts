@@ -146,8 +146,19 @@ export async function getUsersAndSessions(): Promise<UsersAndSessionsReport> {
 
   const report: UsersAndSessionsReport = {
     user_count: userCount,
-    // No sessions table yet — track in punch list.
-    active_sessions_24h: { value: null, unmeasured: true, error: 'no sessions table' },
+    active_sessions_24h: await (async () => {
+      try {
+        const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+        const { count, error } = await supabase
+          .from("sessions")
+          .select("id", { count: "exact", head: true })
+          .gte("last_seen_at", since);
+        if (error) return { value: null, unmeasured: true, error: error.message };
+        return { value: count ?? 0 };
+      } catch (err) {
+        return { value: null, unmeasured: true, error: err instanceof Error ? err.message : String(err) };
+      }
+    })(),
     users_signed_up_today: today,
     users_signed_up_7d: last7d,
     users_signed_up_30d: last30d,
