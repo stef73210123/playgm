@@ -12,6 +12,8 @@
  */
 
 require('dotenv').config();
+const fs   = require('fs');
+const path = require('path');
 const { lookupPlayer, lastTeamEvents } = require('../api/sportsdb');
 const {
   getAllPlayers, upsertPlayer,
@@ -154,12 +156,18 @@ async function run() {
     diffSummary,
   });
 
-  console.log(`\n=== Done — ${updated} updated, ${failed} failed ===\n`);
+  const logFile = writeDiffLog(diffSummary, { total: players.length, updated, failed });
+  console.log(`\n=== Done — ${updated} updated, ${failed} failed ===`);
+  console.log(`Diff log: ${logFile}\n`);
   printDiffReport(diffSummary);
 }
 
 function printDiffReport(diffSummary) {
-  const changed = diffSummary.filter((e) => e.diff && e.diff.length > 0);
+  // initial_load entries are first-ever seeds — not real stat changes
+  const changed = diffSummary.filter((e) => {
+    if (!e.diff || e.diff.length === 0) return false;
+    return !e.diff.every((d) => d.field === 'initial_load');
+  });
   if (changed.length === 0) {
     console.log('No stat changes detected today.');
     return;
@@ -173,6 +181,16 @@ function printDiffReport(diffSummary) {
     });
   });
   console.log('\n────────────────────────────────────────────\n');
+}
+
+function writeDiffLog(diffSummary, meta) {
+  const logsDir = path.resolve(process.env.LOGS_DIR || './logs');
+  fs.mkdirSync(logsDir, { recursive: true });
+  const date    = new Date().toISOString().slice(0, 10);
+  const outPath = path.join(logsDir, `${date}.json`);
+  const record  = { ...meta, timestamp: new Date().toISOString(), diffSummary };
+  fs.writeFileSync(outPath, JSON.stringify(record, null, 2));
+  return outPath;
 }
 
 // Allow running directly: `node src/jobs/morningRefresh.js`
