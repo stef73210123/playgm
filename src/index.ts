@@ -25,6 +25,8 @@ import { leaderboardRoutes } from './routes/leaderboard.js';
 import { scoutVoiceRoutes } from './routes/scoutVoice.js';
 import { adminRoutes, installRouteTracker } from './routes/admin.js';
 import { adminEditRoutes } from './routes/adminEdit.js';
+import { playersRoutes } from './routes/players.js';
+import { startStatsRefreshJobs } from './jobs/refreshStats.js';
 
 const PORT = Number(process.env.PORT ?? 3001);
 const HOST = '0.0.0.0';
@@ -85,6 +87,7 @@ await server.register(leaderboardRoutes, { prefix: '/' });
 await server.register(scoutVoiceRoutes, { prefix: '/' });
 await server.register(adminRoutes, { prefix: '/' });
 await server.register(adminEditRoutes, { prefix: '/' });
+await server.register(playersRoutes, { prefix: '/' });
 
 // ─── Start ───────────────────────────────────────────────────────────────────
 
@@ -105,6 +108,7 @@ try {
   startDataSync(server.log);      // 24-hr stats refresh
   startMorningReveal(server.log); // 6am UTC victory reveal
   startLiveScoreSync();           // 120-s live score poll (War Room)
+  startStatsRefreshJobs(server.log); // Per-league ESPN refresh (daily 04:00 ET + hourly in-season)
 
   // Daily 5am ET highlight cache refresh (America/New_York handles DST automatically)
   cron.schedule('0 5 * * *', () => warmHighlightCache(server.log), {
