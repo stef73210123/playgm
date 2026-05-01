@@ -41,6 +41,12 @@ import { existsSync } from 'node:fs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { supabase } from '../db/client.js';
+import {
+  loadChannelDefinitions,
+  loadChannelActuals,
+  invalidateAdvertisingCache,
+  type ChannelActualsFile,
+} from '../services/advertising.js';
 
 // ─── Project root resolution (mirrors admin.ts) ──────────────────────────
 function findProjectRoot(): string {
@@ -54,6 +60,12 @@ function findProjectRoot(): string {
 const PROJECT_ROOT = findProjectRoot();
 const CARD_TEMPLATES_PATH = path.join(PROJECT_ROOT, 'data', 'cards', 'pgm_card_templates.json');
 const TRIVIA_DIR = path.join(PROJECT_ROOT, 'assets', 'challenges');
+const ADVERTISING_ACTUALS_PATH = path.join(
+  PROJECT_ROOT,
+  'data',
+  'marketing',
+  'channel_actuals.json',
+);
 
 // ─── Constants / validation tables ───────────────────────────────────────
 const RARITIES = ['common', 'uncommon', 'rare', 'epic', 'legendary'] as const;
@@ -256,6 +268,44 @@ function validateTriviaQuestion(
   return errs;
 }
 
+/**
+ * Validate an advertising-actuals PATCH body.
+ * Body shape: { current_month?: {key:number}, last_month?: {key:number} }
+ *
+ * Rules:
+ *   - All values must be numeric (no strings, no NaN, no Infinity).
+ *   - No negatives.
+ *   - USD-suffixed keys (*_usd) round to 2 decimals; the editor sends pre-rounded
+ *     numbers but we don't reject if a 4-decimal value comes through — we accept,
+ *     we just round on save. Validation only rejects bad SHAPE, not precision.
+ *   - Allowed keys are filtered to the channel's metric_keys (others ignored
+ *     silently — no hard error so the schema can evolve).
+ */
+function validateAdvertisingPayload(
+  body: Record<string, unknown>,
+): ValidationError[] {
+  const errs: ValidationError[] = [];
+  for (const period of ['current_month', 'last_month'] as const) {
+    if (body[period] === undefined) continue;
+    const p = body[period];
+    if (p == null || typeof p !== 'object' || Array.isArray(p)) {
+      errs.push({ field: period, message: 'must be object' });
+      continue;
+    }
+    for (const [k, v] of Object.entries(p)) {
+      if (v === undefined || v === null) continue;
+      if (typeof v !== 'number' || !Number.isFinite(v)) {
+        errs.push({ field: `${period}.${k}`, message: 'must be a finite number' });
+        continue;
+      }
+      if (v < 0) {
+        errs.push({ field: `${period}.${k}`, message: 'must be ≥ 0' });
+      }
+    }
+  }
+  return errs;
+}
+
 function validateVideoUrlPayload(body: Record<string, unknown>): ValidationError[] {
   const errs: ValidationError[] = [];
   if (body['video_highlight_url'] !== undefined && !isVideoUrl(body['video_highlight_url'])) {
@@ -378,6 +428,86 @@ export async function adminEditRoutes(fastify: FastifyInstance): Promise<void> {
   fastify.get('/admin/edit/trivia', async (_req, reply) => {
     reply.type('text/html; charset=utf-8');
     return renderTriviaPage();
+  });
+  fastify.get('/admin/edit/advertising', async (_req, reply) => {
+    reply.type('text/html; charset=utf-8');
+    return renderAdvertisingPage();
+  });
+
+  // ═══ ADVERTISING API ═════════════════════════════════════════════════════
+  fastify.get('/admin/api/advertising/:channel_id', async (req, reply) => {
+    const { channel_id } = req.params as { channel_id: string };
+    const defs = loadChannelDefinitions();
+    const def = defs.channels.find((c) => c.channel_id === channel_id);
+    if (!def) return notFound(reply, `channel ${channel_id}`);
+    const actuals = loadChannelActuals();
+    const a = actuals.actuals_by_channel[channel_id] ?? {
+      current_month: {},
+      last_month: {},
+      last_updated_iso: null,
+    };
+    return { ok: true, channel: def, actuals: a };
+  });
+
+  fastify.patch('/admin/api/advertising/:channel_id', async (req, reply) => {
+    const { channel_id } = req.params as { channel_id: string };
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const errs = validateAdvertisingPayload(body);
+    if (errs.length) return badRequest(reply, errs);
+
+    const defs = loadChannelDefinitions();
+    const def = defs.channels.find((c) => c.channel_id === channel_id);
+    if (!def) return notFound(reply, `channel ${channel_id}`);
+
+    const file = loadChannelActuals();
+    const cur = file.actuals_by_channel[channel_id] ?? {
+      current_month: {},
+      last_month: {},
+      last_updated_iso: null,
+    };
+
+    const allowedKeys = new Set(def.metric_keys);
+    function mergePeriod(
+      base: Record<string, number>,
+      patch: Record<string, unknown> | undefined,
+    ): Record<string, number> {
+      if (!patch) return base;
+      const out: Record<string, number> = { ...base };
+      for (const [k, v] of Object.entries(patch)) {
+        if (!allowedKeys.has(k)) continue; // silently drop unknown keys
+        if (typeof v !== 'number' || !Number.isFinite(v)) continue;
+        // Round USD values to 2 decimals.
+        out[k] = /_usd$/.test(k) ? Math.round(v * 100) / 100 : v;
+      }
+      return out;
+    }
+
+    const nowIso = new Date().toISOString();
+    const merged = {
+      current_month: mergePeriod(
+        cur.current_month ?? {},
+        body['current_month'] as Record<string, unknown> | undefined,
+      ),
+      last_month: mergePeriod(
+        cur.last_month ?? {},
+        body['last_month'] as Record<string, unknown> | undefined,
+      ),
+      last_updated_iso: nowIso,
+    };
+
+    const newFile: ChannelActualsFile = {
+      ...file,
+      last_updated_iso: nowIso,
+      actuals_by_channel: { ...file.actuals_by_channel, [channel_id]: merged },
+    };
+    const out = JSON.stringify(newFile, null, 2) + '\n';
+    await fs.writeFile(ADVERTISING_ACTUALS_PATH, out, 'utf8');
+    invalidateAdvertisingCache();
+    const commit = autoCommit(
+      'data/marketing/channel_actuals.json',
+      `chore(content): update advertising actuals — ${channel_id}`,
+    );
+    return { ok: true, channel_id, actuals: merged, commit };
   });
 
   // ═══ PLAYERS API ═════════════════════════════════════════════════════════
@@ -786,7 +916,8 @@ const SHARED_CRUMBS = /* html */ `
     <a href="/admin/edit/players">Players</a> ·
     <a href="/admin/edit/teams">Teams</a> ·
     <a href="/admin/edit/cards">Cards</a> ·
-    <a href="/admin/edit/trivia">Trivia</a>
+    <a href="/admin/edit/trivia">Trivia</a> ·
+    <a href="/admin/edit/advertising">Advertising</a>
   </nav>
 `;
 
@@ -1297,5 +1428,128 @@ const TRIVIA_JS = /* javascript */ `
   el('prev').addEventListener('click', () => { if (page > 1) { page--; load(); }});
   el('next').addEventListener('click', () => { page++; load(); });
   load();
+})();
+`;
+
+// ─── Advertising editor page ─────────────────────────────────────────────
+function renderAdvertisingPage(): string {
+  return /* html */ `<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8" /><meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>PlayGM Editor · Advertising</title>
+<style>${SHARED_STYLE}</style>
+</head><body>
+<div class="wrap">
+  <header>
+    <h1>Advertising Actuals</h1>
+    ${SHARED_CRUMBS}
+  </header>
+  <div class="muted" style="margin-bottom:10px;">
+    Source: <code>data/marketing/channel_actuals.json</code> · auto-commits on save (no push).
+    All targets in <code>channel_definitions.json</code> are extrapolated / industry-standard — not in any GDD.
+  </div>
+  <div id="ad-channels" class="muted">Loading channels…</div>
+</div>
+<script>${ADVERTISING_JS}</script>
+</body></html>`;
+}
+
+const ADVERTISING_JS = /* javascript */ `
+(() => {
+  const el = id => document.getElementById(id);
+  const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  function audienceBadges(a) {
+    if (!a || !a.length) return '';
+    return a.map(t => {
+      const cls = /COPPA|<13/.test(t) ? 'fail' : (/kid-safe|8\\+/.test(t) ? 'warn' : 'ok');
+      return '<span class="status-pill ' + cls + '" style="margin-right:4px;">' + esc(t) + '</span>';
+    }).join('');
+  }
+  async function loadAll() {
+    const res = await fetch('/admin/api/advertising');
+    const json = await res.json();
+    if (!json || !json.channels) {
+      el('ad-channels').textContent = 'Failed to load advertising data.';
+      return;
+    }
+    const root = el('ad-channels');
+    root.classList.remove('muted');
+    root.innerHTML = json.channels.map(buildCardHtml).join('');
+    json.channels.forEach((c) => wireCard(c));
+  }
+  function buildCardHtml(c) {
+    const cur = (c.current || {});
+    const lm  = (c.last_month || {});
+    const rows = c.target ? Object.keys(c).filter(()=>false) : [];
+    void rows;
+    const target = c.target || {};
+    const targetLines = Object.entries(target).map(([k,v]) =>
+      '<div class="kv"><span class="k">' + esc(k) + '</span><span><code>' + esc(String(v)) + '</code> <span class="status-pill warn" title="' + esc(c.target_source||'') + '">extrapolated</span></span></div>'
+    ).join('');
+    function row(metricKey) {
+      const isUsd = /_usd$/.test(metricKey);
+      const step = isUsd ? '0.01' : '1';
+      const min = '0';
+      return '<tr data-key="' + esc(metricKey) + '">' +
+        '<td><code>' + esc(metricKey) + '</code></td>' +
+        '<td><input type="number" min="' + min + '" step="' + step + '" class="cur" value="' + esc(cur[metricKey] != null ? cur[metricKey] : '') + '" /></td>' +
+        '<td><input type="number" min="' + min + '" step="' + step + '" class="lm"  value="' + esc(lm[metricKey]  != null ? lm[metricKey]  : '') + '" /></td>' +
+        '</tr>';
+    }
+    return '<div class="card-block" data-channel="' + esc(c.channel_id) + '">' +
+      '<div style="display:flex;align-items:baseline;justify-content:space-between;gap:8px;flex-wrap:wrap;">' +
+        '<div><strong>' + esc(c.display_name) + '</strong> <span class="muted">· ' + esc(c.category) + ' · KPI: <code>' + esc(c.kpi_focus) + '</code></span></div>' +
+        '<div>' + audienceBadges(c.audience_constraints) + '</div>' +
+      '</div>' +
+      '<div style="display:grid;grid-template-columns:1fr 240px;gap:12px;margin-top:10px;align-items:start;">' +
+        '<div><table>' +
+          '<thead><tr><th>Metric</th><th>Current month</th><th>Last month</th></tr></thead>' +
+          '<tbody>' + c.metric_keys.map(row).join('') + '</tbody>' +
+        '</table>' +
+        '<div style="margin-top:8px;display:flex;gap:8px;align-items:center;">' +
+          '<button class="btn primary save">Save</button>' +
+          '<span class="hint status"></span>' +
+        '</div></div>' +
+        '<div><div class="muted" style="font-size:11px;text-transform:uppercase;letter-spacing:0.4px;margin-bottom:4px;">Targets</div>' +
+          targetLines + '</div>' +
+      '</div>' +
+    '</div>';
+  }
+  function wireCard(c) {
+    const card = document.querySelector('[data-channel="' + c.channel_id + '"]');
+    if (!card) return;
+    const btn = card.querySelector('button.save');
+    btn.addEventListener('click', async () => {
+      const status = card.querySelector('.status');
+      const current_month = {};
+      const last_month = {};
+      card.querySelectorAll('tr[data-key]').forEach(tr => {
+        const k = tr.dataset.key;
+        const cv = tr.querySelector('input.cur').value;
+        const lv = tr.querySelector('input.lm').value;
+        if (cv !== '') {
+          const n = Number(cv);
+          if (!Number.isNaN(n)) current_month[k] = n;
+        }
+        if (lv !== '') {
+          const n = Number(lv);
+          if (!Number.isNaN(n)) last_month[k] = n;
+        }
+      });
+      status.textContent = 'saving…';
+      const res = await fetch('/admin/api/advertising/' + encodeURIComponent(c.channel_id), {
+        method: 'PATCH', headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({ current_month, last_month })
+      });
+      const json = await res.json();
+      if (!res.ok || !json.ok) {
+        status.innerHTML = '<span class="err">' + esc((json.errors||[]).map(e=>e.field+': '+e.message).join(', ') || json.error || 'error') + '</span>';
+        return;
+      }
+      status.innerHTML = '<span class="ok">saved · ' + (json.commit && json.commit.ok ? 'committed' : 'no commit') + '</span>';
+      setTimeout(() => status.textContent = '', 2400);
+    });
+  }
+  loadAll();
 })();
 `;

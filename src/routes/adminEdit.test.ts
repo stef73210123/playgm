@@ -178,6 +178,7 @@ describe('admin edit routes', () => {
     ['/admin/edit/teams', 'Team Video Links'],
     ['/admin/edit/cards', 'Card Template Inventory'],
     ['/admin/edit/trivia', 'Trivia Question Inventory'],
+    ['/admin/edit/advertising', 'Advertising Actuals'],
   ])('GET %s renders self-contained HTML', async (url, marker) => {
     const app = await buildApp();
     try {
