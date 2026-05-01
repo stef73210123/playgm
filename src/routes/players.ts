@@ -11,7 +11,13 @@
  */
 import type { FastifyInstance } from 'fastify';
 import { computeRating, type TierName } from '../services/ratings/computeRatings.js';
-import { findPlayer, getAllPlayers, getCacheCounts } from '../services/ratings/cacheLookup.js';
+import {
+  findPlayer,
+  getAllPlayers,
+  getCacheCounts,
+  getPlayerRating,
+  getPlayerStats,
+} from '../services/ratings/cacheLookup.js';
 import type { League } from '../services/stats/types.js';
 
 const TIERS: TierName[] = ['elite', 'strong', 'solid', 'role', 'deep_bench'];
@@ -19,16 +25,40 @@ const TIERS: TierName[] = ['elite', 'strong', 'solid', 'role', 'deep_bench'];
 export async function playersRoutes(fastify: FastifyInstance): Promise<void> {
   fastify.get<{ Params: { id: string } }>('/players/:id/rating', async (req, reply) => {
     const id = req.params.id;
+    // Try the JSON cache first to recover (sport, position_group, full
+    // stats blob) — those metadata fields are not in player_stats.
     const found = findPlayer(id);
     if (!found) {
       reply.code(404);
       return { error: 'player_not_found', player_id: id };
     }
+
+    // Supabase-first: if a precomputed rating exists, prefer it. The DB row
+    // is the freshest source once the refreshStats job is dual-writing.
+    const supaRating = await getPlayerRating(id, found.league);
+    if (supaRating) {
+      const breakdowns = (supaRating.breakdowns_json as { stat_breakdowns?: unknown[] } | null)
+        ?.stat_breakdowns;
+      return {
+        player_id: supaRating.player_id,
+        sport: supaRating.sport,
+        position: found.player.position_group,
+        overall_tier: supaRating.overall_tier as TierName,
+        stat_breakdowns: Array.isArray(breakdowns) ? breakdowns : [],
+        score: 0,
+        source: 'supabase-player-ratings',
+      };
+    }
+
+    // Otherwise pull stats from Supabase (falling back to the JSON cache)
+    // and compute on-demand. The cache `position_group` is required either way.
+    const supaStats = await getPlayerStats(id, found.league);
+    const stats = supaStats?.stats_json ?? found.player.stats;
     const result = computeRating({
       playerId: found.player.external_id,
       sport: found.league,
       position: found.player.position_group,
-      stats: found.player.stats,
+      stats,
     });
     if (!result) {
       reply.code(503);
@@ -39,7 +69,10 @@ export async function playersRoutes(fastify: FastifyInstance): Promise<void> {
         position: found.player.position_group,
       };
     }
-    return result;
+    return {
+      ...result,
+      source: supaStats ? 'supabase-stats+computed' : (result.source ?? 'tier-files-v1'),
+    };
   });
 
   fastify.get('/admin/ratings/distribution', async () => {

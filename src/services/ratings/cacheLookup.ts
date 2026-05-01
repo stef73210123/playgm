@@ -9,6 +9,7 @@ import { existsSync, readFileSync, statSync } from 'node:fs';
 import path from 'node:path';
 import type { League } from '../stats/types.js';
 import type { PlayerCacheEntry, SeasonCache } from '../../scripts/pull-stats-shared.js';
+import { supabase } from '../../db/client.js';
 
 const REPO_ROOT = (() => {
   let cur = process.cwd();
@@ -90,5 +91,65 @@ export function getAllPlayers(league: League): { players: PlayerCacheEntry[] } |
 export function clearCacheLookups(): void {
   for (const k of Object.keys(loaded) as League[]) {
     delete loaded[k];
+  }
+}
+
+// ─── Supabase-first read paths (best-effort) ────────────────────────────────
+//
+// The runtime prefers Supabase `player_stats` / `player_ratings` when the
+// migration is applied AND the row exists. If the query errors or returns
+// nothing, callers should fall back to the in-memory JSON cache below — see
+// routes/players.ts for the wiring.
+
+export interface SupabasePlayerStats {
+  player_id: string;
+  sport: League;
+  season: string;
+  stats_json: Record<string, number>;
+  fetched_at: string;
+}
+
+export interface SupabasePlayerRating {
+  player_id: string;
+  sport: League;
+  season: string;
+  overall_tier: string;
+  breakdowns_json: unknown;
+  computed_at: string;
+}
+
+/**
+ * Try to load player stats from Supabase. Returns null on miss / error so the
+ * caller can fall back to the JSON cache. The sport filter is optional — when
+ * omitted the lookup keys on (player_id) and grabs the freshest row.
+ */
+export async function getPlayerStats(
+  playerId: string,
+  sport?: League,
+): Promise<SupabasePlayerStats | null> {
+  try {
+    let q = supabase.from('player_stats').select('*').eq('player_id', playerId);
+    if (sport) q = q.eq('sport', sport);
+    const { data, error } = await q.order('fetched_at', { ascending: false }).limit(1);
+    if (error || !data || data.length === 0) return null;
+    return data[0] as SupabasePlayerStats;
+  } catch {
+    return null;
+  }
+}
+
+/** Same shape, but for the ratings table. */
+export async function getPlayerRating(
+  playerId: string,
+  sport?: League,
+): Promise<SupabasePlayerRating | null> {
+  try {
+    let q = supabase.from('player_ratings').select('*').eq('player_id', playerId);
+    if (sport) q = q.eq('sport', sport);
+    const { data, error } = await q.order('computed_at', { ascending: false }).limit(1);
+    if (error || !data || data.length === 0) return null;
+    return data[0] as SupabasePlayerRating;
+  } catch {
+    return null;
   }
 }
