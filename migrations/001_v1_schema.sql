@@ -464,4 +464,51 @@ EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
 COMMENT ON TABLE ask_scout_usage IS 'Per-(user, UTC day) Ask Scout LLM call counts. Authoritative source for the daily cap enforced in server/src/services/askScoutLimiter.ts.';
 
+-- ============================================================================
+-- SECTION: Per-user safety matrix overrides
+-- ============================================================================
+-- Per-user feature overrides applied on top of the age-based safety matrix
+-- (data/safety/age_feature_matrix.json). The matrix gives every age a
+-- baseline allow / moderated / blocked / off decision per feature; this
+-- table lets an admin push a specific user off that baseline for a single
+-- feature with an audit trail (`reason`, `set_by_admin`).
+--
+-- Resolver layering (server/src/services/safetyResolver.ts):
+--   1. Look up user.age (computed from profiles.birth_year)
+--   2. Call resolveFeaturesForAge(age) → matrix-derived baseline
+--   3. For every (user_id, feature_id) row here, override the baseline
+--      with `enabled` (true → "allow", false → "blocked")
+--   4. Cache the resulting effective set per-user for 5 min
+--
+-- NULL = inherit from the matrix (we never store NULLs — absence of a row
+-- means inherit). An explicit boolean = override.
+--
+-- Writes go through the admin dashboard via the service role; RLS only
+-- exposes a user's own rows for read so the client can show "you have
+-- N overrides applied" if we ever want to surface that.
+
+CREATE TABLE IF NOT EXISTS user_safety_overrides (
+  id           UUID         DEFAULT gen_random_uuid() PRIMARY KEY,
+  user_id      UUID         NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+  feature_id   TEXT         NOT NULL,
+  enabled      BOOLEAN      NOT NULL,
+  reason       TEXT,                                        -- audit: why was this overridden
+  set_by_admin TEXT,                                        -- email or admin user id of the dashboard editor
+  created_at   TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+  CONSTRAINT uq_user_safety_overrides_user_feature UNIQUE (user_id, feature_id)
+);
+
+CREATE INDEX IF NOT EXISTS ix_uso_user
+  ON user_safety_overrides (user_id);
+
+ALTER TABLE user_safety_overrides ENABLE ROW LEVEL SECURITY;
+DO $$ BEGIN
+  CREATE POLICY uso_select_own ON user_safety_overrides
+    FOR SELECT USING (auth.uid() = user_id);
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+-- Writes go through the service role (bypasses RLS), same pattern as
+-- pp_events / card_inventory / ask_scout_usage.
+
+COMMENT ON TABLE user_safety_overrides IS 'Per-user overrides on top of the age-based safety matrix. Resolver: server/src/services/safetyResolver.ts. Editor: GET /admin/edit/safety (Per-User tab).';
+
 COMMIT;
