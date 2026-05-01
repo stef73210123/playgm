@@ -47,6 +47,13 @@ import {
   invalidateAdvertisingCache,
   type ChannelActualsFile,
 } from '../services/advertising.js';
+import {
+  invalidateSafetyMatrixCache,
+  loadSafetyMatrix,
+  validateFeature,
+  type SafetyFeature,
+  type SafetyMatrixFile,
+} from '../services/safetyMatrix.js';
 
 // ─── Project root resolution (mirrors admin.ts) ──────────────────────────
 function findProjectRoot(): string {
@@ -65,6 +72,12 @@ const ADVERTISING_ACTUALS_PATH = path.join(
   'data',
   'marketing',
   'channel_actuals.json',
+);
+const SAFETY_MATRIX_PATH = path.join(
+  PROJECT_ROOT,
+  'data',
+  'safety',
+  'age_feature_matrix.json',
 );
 
 // ─── Constants / validation tables ───────────────────────────────────────
@@ -306,6 +319,86 @@ function validateAdvertisingPayload(
   return errs;
 }
 
+/**
+ * Validate the PATCH body for /admin/api/safety-matrix/:feature_id.
+ *
+ * Per spec:
+ *   - min_age in [5, 14], max_age in [5, 14], min ≤ max — except the 0/0 sentinel
+ *     (which means "never default-on"; used for parent-only features).
+ *   - requires_parent_consent_under in [0, 18]
+ *   - rationale non-empty
+ *
+ * The full per-feature semantic check (e.g. ages_blocked / ages_with_moderation
+ * shape) is done after merging via validateFeature() in safetyMatrix.ts. This
+ * function only catches obviously-wrong shapes before we even attempt a merge.
+ */
+function validateSafetyMatrixPatch(body: Record<string, unknown>): ValidationError[] {
+  const errs: ValidationError[] = [];
+  function inAgeRange(v: unknown, allowZero: boolean): boolean {
+    if (!Number.isInteger(v)) return false;
+    const n = v as number;
+    if (allowZero && n === 0) return true;
+    return n >= 5 && n <= 14;
+  }
+  if (
+    body['min_age_default_on'] !== undefined &&
+    !inAgeRange(body['min_age_default_on'], true)
+  ) {
+    errs.push({ field: 'min_age_default_on', message: 'integer in [5, 14] (or 0 sentinel)' });
+  }
+  if (
+    body['max_age_default_on'] !== undefined &&
+    !inAgeRange(body['max_age_default_on'], true)
+  ) {
+    errs.push({ field: 'max_age_default_on', message: 'integer in [5, 14] (or 0 sentinel)' });
+  }
+  if (
+    body['min_age_default_on'] !== undefined &&
+    body['max_age_default_on'] !== undefined &&
+    !((body['min_age_default_on'] as number) === 0 && (body['max_age_default_on'] as number) === 0) &&
+    (body['min_age_default_on'] as number) > (body['max_age_default_on'] as number)
+  ) {
+    errs.push({ field: 'min_age_default_on', message: 'must be ≤ max_age_default_on' });
+  }
+  if (body['ages_with_moderation'] !== undefined) {
+    const a = body['ages_with_moderation'];
+    if (!Array.isArray(a) || !a.every((n) => Number.isInteger(n) && (n as number) >= 5 && (n as number) <= 14)) {
+      errs.push({ field: 'ages_with_moderation', message: 'array of integers in [5, 14]' });
+    }
+  }
+  if (body['ages_blocked'] !== undefined) {
+    const a = body['ages_blocked'];
+    if (!Array.isArray(a) || !a.every((n) => Number.isInteger(n) && (n as number) >= 5 && (n as number) <= 14)) {
+      errs.push({ field: 'ages_blocked', message: 'array of integers in [5, 14]' });
+    }
+  }
+  if (body['parent_override_allowed'] !== undefined && typeof body['parent_override_allowed'] !== 'boolean') {
+    errs.push({ field: 'parent_override_allowed', message: 'must be boolean' });
+  }
+  if (body['requires_parent_consent_under'] !== undefined) {
+    const v = body['requires_parent_consent_under'];
+    if (!Number.isInteger(v) || (v as number) < 0 || (v as number) > 18) {
+      errs.push({ field: 'requires_parent_consent_under', message: 'integer in [0, 18]' });
+    }
+  }
+  if (body['rationale'] !== undefined) {
+    if (typeof body['rationale'] !== 'string' || body['rationale'].trim().length === 0) {
+      errs.push({ field: 'rationale', message: 'non-empty string required' });
+    }
+  }
+  if (body['source'] !== undefined) {
+    if (typeof body['source'] !== 'string' || body['source'].trim().length === 0) {
+      errs.push({ field: 'source', message: 'non-empty string required' });
+    }
+  }
+  if (body['label'] !== undefined) {
+    if (typeof body['label'] !== 'string' || body['label'].trim().length === 0) {
+      errs.push({ field: 'label', message: 'non-empty string required' });
+    }
+  }
+  return errs;
+}
+
 function validateVideoUrlPayload(body: Record<string, unknown>): ValidationError[] {
   const errs: ValidationError[] = [];
   if (body['video_highlight_url'] !== undefined && !isVideoUrl(body['video_highlight_url'])) {
@@ -432,6 +525,92 @@ export async function adminEditRoutes(fastify: FastifyInstance): Promise<void> {
   fastify.get('/admin/edit/advertising', async (_req, reply) => {
     reply.type('text/html; charset=utf-8');
     return renderAdvertisingPage();
+  });
+  fastify.get('/admin/edit/safety', async (_req, reply) => {
+    reply.type('text/html; charset=utf-8');
+    return renderSafetyPage();
+  });
+
+  // ═══ SAFETY MATRIX API ═══════════════════════════════════════════════════
+  fastify.get('/admin/api/safety-matrix', async (_req, reply) => {
+    try {
+      const file = loadSafetyMatrix();
+      return { ok: true, ...file };
+    } catch (err) {
+      reply.code(500).send({
+        ok: false,
+        error: err instanceof Error ? err.message : 'failed to load safety matrix',
+      });
+      return reply;
+    }
+  });
+
+  fastify.patch('/admin/api/safety-matrix/:feature_id', async (req, reply) => {
+    const { feature_id } = req.params as { feature_id: string };
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const errs = validateSafetyMatrixPatch(body);
+    if (errs.length) return badRequest(reply, errs);
+
+    let file: SafetyMatrixFile;
+    try {
+      file = JSON.parse(await fs.readFile(SAFETY_MATRIX_PATH, 'utf8')) as SafetyMatrixFile;
+    } catch (err) {
+      reply.code(500).send({
+        ok: false,
+        error: err instanceof Error ? err.message : 'failed to read safety matrix',
+      });
+      return reply;
+    }
+    const idx = file.features.findIndex((f) => f.feature_id === feature_id);
+    if (idx === -1) return notFound(reply, `safety feature ${feature_id}`);
+    const cur = file.features[idx]!;
+
+    // Apply allowed PATCH fields. feature_id and category are immutable here —
+    // structural changes go through the JSON file directly.
+    const merged: SafetyFeature = {
+      ...cur,
+      ...(body['label'] !== undefined ? { label: body['label'] as string } : {}),
+      ...(body['min_age_default_on'] !== undefined
+        ? { min_age_default_on: body['min_age_default_on'] as number }
+        : {}),
+      ...(body['max_age_default_on'] !== undefined
+        ? { max_age_default_on: body['max_age_default_on'] as number }
+        : {}),
+      ...(body['ages_with_moderation'] !== undefined
+        ? { ages_with_moderation: body['ages_with_moderation'] as number[] }
+        : {}),
+      ...(body['ages_blocked'] !== undefined
+        ? { ages_blocked: body['ages_blocked'] as number[] }
+        : {}),
+      ...(body['parent_override_allowed'] !== undefined
+        ? { parent_override_allowed: body['parent_override_allowed'] as boolean }
+        : {}),
+      ...(body['requires_parent_consent_under'] !== undefined
+        ? {
+            requires_parent_consent_under: body['requires_parent_consent_under'] as number,
+          }
+        : {}),
+      ...(body['rationale'] !== undefined ? { rationale: body['rationale'] as string } : {}),
+      ...(body['source'] !== undefined ? { source: body['source'] as string } : {}),
+    };
+
+    // Whole-record validation — guards against patches that produce an
+    // internally inconsistent feature (e.g. min > max after a partial update).
+    const finalErr = validateFeature(merged);
+    if (finalErr) {
+      return badRequest(reply, [{ field: 'feature', message: finalErr }]);
+    }
+
+    file.features[idx] = merged;
+    file.last_updated_iso = new Date().toISOString();
+    const out = JSON.stringify(file, null, 2) + '\n';
+    await fs.writeFile(SAFETY_MATRIX_PATH, out, 'utf8');
+    invalidateSafetyMatrixCache();
+    const commit = autoCommit(
+      'data/safety/age_feature_matrix.json',
+      `chore(content): update safety matrix — ${feature_id}`,
+    );
+    return { ok: true, item: merged, commit };
   });
 
   // ═══ ADVERTISING API ═════════════════════════════════════════════════════
@@ -917,7 +1096,8 @@ const SHARED_CRUMBS = /* html */ `
     <a href="/admin/edit/teams">Teams</a> ·
     <a href="/admin/edit/cards">Cards</a> ·
     <a href="/admin/edit/trivia">Trivia</a> ·
-    <a href="/admin/edit/advertising">Advertising</a>
+    <a href="/admin/edit/advertising">Advertising</a> ·
+    <a href="/admin/edit/safety">Safety matrix</a>
   </nav>
 `;
 
@@ -1551,5 +1731,166 @@ const ADVERTISING_JS = /* javascript */ `
     });
   }
   loadAll();
+})();
+`;
+
+// ─── Safety matrix editor page ───────────────────────────────────────────
+function renderSafetyPage(): string {
+  return /* html */ `<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8" /><meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>PlayGM Editor · Safety Matrix</title>
+<style>${SHARED_STYLE}
+  table.matrix th, table.matrix td { font-size: 12px; padding: 6px 8px; }
+  table.matrix .ages td { text-align: center; min-width: 26px; }
+  table.matrix .ages .a-allow    { background: rgba(74,222,128,.18); color: var(--green);  }
+  table.matrix .ages .a-mod      { background: rgba(250,204,21,.20); color: var(--yellow); }
+  table.matrix .ages .a-blocked  { background: rgba(248,113,113,.18); color: var(--red);   }
+  table.matrix .ages .a-off      { background: rgba(107,114,128,.20); color: var(--muted); }
+  .legend { display: flex; gap: 12px; flex-wrap: wrap; margin: 8px 0 14px; font-size: 12px; }
+  .legend span { display: inline-block; padding: 1px 8px; border-radius: 999px; }
+  details.feat { background: var(--card-2); border-radius: 8px; padding: 8px 12px; margin-top: 6px; }
+  details.feat summary { color: var(--text); font-weight: 500; }
+  details.feat .form { display: grid; grid-template-columns: 200px 1fr; gap: 6px 12px; margin-top: 8px; align-items: center; }
+  details.feat .form label { color: var(--muted); font-size: 12px; }
+  details.feat textarea { min-height: 56px; }
+</style>
+</head><body>
+<div class="wrap">
+  <header>
+    <h1>Safety Matrix Editor</h1>
+    ${SHARED_CRUMBS}
+  </header>
+  <div class="muted" style="margin-bottom:10px;">
+    Source: <code>data/safety/age_feature_matrix.json</code> · auto-commits on save (no push). ·
+    Long-form rationale lives in <code>docs/gdd/age-recommendations.md</code>.
+  </div>
+  <div class="legend">
+    <span class="status-pill ok">allow</span>
+    <span class="status-pill warn">moderated</span>
+    <span class="status-pill unmeas">off (parent override)</span>
+    <span class="status-pill fail">blocked (statutory floor)</span>
+  </div>
+  <div id="meta" class="muted">Loading…</div>
+  <div class="card-block" id="matrix-grid-card">
+    <table class="matrix" id="matrix-grid">
+      <thead><tr id="matrix-grid-head"></tr></thead>
+      <tbody></tbody>
+    </table>
+  </div>
+  <div id="features-list"></div>
+</div>
+<script>${SAFETY_JS}</script>
+</body></html>`;
+}
+
+const SAFETY_JS = /* javascript */ `
+(() => {
+  const el = id => document.getElementById(id);
+  const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  const AGES = [5, 6, 7, 8, 9, 10, 11, 12, 13, 14];
+
+  function decideForAge(f, age) {
+    if ((f.ages_blocked || []).includes(age)) return 'blocked';
+    if ((f.ages_with_moderation || []).includes(age)) return 'moderated';
+    const neverDefault = f.min_age_default_on === 0 && f.max_age_default_on === 0;
+    if (!neverDefault && age >= f.min_age_default_on && age <= f.max_age_default_on) return 'allow';
+    return f.parent_override_allowed ? 'off' : 'blocked';
+  }
+  function classFor(d) { return d === 'allow' ? 'a-allow' : d === 'moderated' ? 'a-mod' : d === 'off' ? 'a-off' : 'a-blocked'; }
+  function symFor(d)   { return d === 'allow' ? '✓' : d === 'moderated' ? 'M' : d === 'off' ? '○' : '✗'; }
+
+  async function load() {
+    const res = await fetch('/admin/api/safety-matrix');
+    const json = await res.json();
+    if (!json.ok) {
+      el('meta').textContent = json.error || 'failed to load matrix';
+      return;
+    }
+    el('meta').innerHTML = '<code>v' + esc(json.version) + '</code> · ' + esc(json.features.length) + ' features · ages ' + esc(json.age_range.min) + '–' + esc(json.age_range.max) + ' · last edited <code>' + esc(new Date(json.last_updated_iso).toLocaleString()) + '</code>';
+
+    // Compact grid: rows = features, cols = ages 5..14
+    const head = ['<th style="text-align:left;">feature</th>'].concat(AGES.map(a => '<th>' + a + '</th>')).join('');
+    el('matrix-grid-head').innerHTML = head;
+    const body = el('matrix-grid').querySelector('tbody');
+    body.innerHTML = json.features.map(f =>
+      '<tr class="ages" data-id="' + esc(f.feature_id) + '">' +
+        '<td style="text-align:left;"><a href="#feat-' + esc(f.feature_id) + '" style="color:var(--accent);text-decoration:none;">' + esc(f.label) + '</a></td>' +
+        AGES.map(age => {
+          const d = decideForAge(f, age);
+          return '<td class="' + classFor(d) + '" title="' + esc(d) + '">' + symFor(d) + '</td>';
+        }).join('') +
+      '</tr>'
+    ).join('');
+
+    // Detailed editable list — one details block per feature.
+    const list = el('features-list');
+    list.innerHTML = json.features.map(f =>
+      '<details class="feat" id="feat-' + esc(f.feature_id) + '" data-id="' + esc(f.feature_id) + '">' +
+        '<summary><strong>' + esc(f.label) + '</strong> · <code>' + esc(f.feature_id) + '</code> · ' +
+          '<span class="muted">' + esc(f.category) + '</span></summary>' +
+        '<div class="form">' +
+          '<label>min_age_default_on</label>' +
+          '<input type="number" min="0" max="14" class="f-min_age_default_on" value="' + esc(f.min_age_default_on) + '" />' +
+          '<label>max_age_default_on</label>' +
+          '<input type="number" min="0" max="14" class="f-max_age_default_on" value="' + esc(f.max_age_default_on) + '" />' +
+          '<label>ages_with_moderation</label>' +
+          '<input class="f-ages_with_moderation" value="' + esc((f.ages_with_moderation||[]).join(',')) + '" placeholder="comma-separated, e.g. 8,9,10" />' +
+          '<label>ages_blocked</label>' +
+          '<input class="f-ages_blocked" value="' + esc((f.ages_blocked||[]).join(',')) + '" placeholder="comma-separated, e.g. 5,6,7" />' +
+          '<label>parent_override_allowed</label>' +
+          '<select class="f-parent_override_allowed">' +
+            '<option value="true"' + (f.parent_override_allowed ? ' selected':'') + '>true</option>' +
+            '<option value="false"' + (!f.parent_override_allowed ? ' selected':'') + '>false</option>' +
+          '</select>' +
+          '<label>requires_parent_consent_under</label>' +
+          '<input type="number" min="0" max="18" class="f-requires_parent_consent_under" value="' + esc(f.requires_parent_consent_under) + '" />' +
+          '<label>rationale</label>' +
+          '<textarea class="f-rationale">' + esc(f.rationale) + '</textarea>' +
+          '<label>source</label>' +
+          '<input class="f-source" value="' + esc(f.source) + '" />' +
+          '<label></label>' +
+          '<div><button class="btn primary save">Save</button> <span class="hint status"></span></div>' +
+        '</div>' +
+      '</details>'
+    ).join('');
+
+    list.querySelectorAll('button.save').forEach(b => b.addEventListener('click', save));
+  }
+
+  function parseAgeList(s) {
+    if (!s || !s.trim()) return [];
+    return s.split(',').map(x => x.trim()).filter(Boolean).map(Number).filter(n => Number.isInteger(n));
+  }
+
+  async function save(ev) {
+    const root = ev.target.closest('details.feat');
+    const id = root.dataset.id;
+    const status = root.querySelector('.status');
+    const body = {
+      min_age_default_on: parseInt(root.querySelector('.f-min_age_default_on').value, 10),
+      max_age_default_on: parseInt(root.querySelector('.f-max_age_default_on').value, 10),
+      ages_with_moderation: parseAgeList(root.querySelector('.f-ages_with_moderation').value),
+      ages_blocked: parseAgeList(root.querySelector('.f-ages_blocked').value),
+      parent_override_allowed: root.querySelector('.f-parent_override_allowed').value === 'true',
+      requires_parent_consent_under: parseInt(root.querySelector('.f-requires_parent_consent_under').value, 10),
+      rationale: root.querySelector('.f-rationale').value,
+      source: root.querySelector('.f-source').value,
+    };
+    status.textContent = 'saving…';
+    const res = await fetch('/admin/api/safety-matrix/' + encodeURIComponent(id), {
+      method: 'PATCH', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify(body)
+    });
+    const json = await res.json();
+    if (!res.ok || !json.ok) {
+      status.innerHTML = '<span class="err">' + esc((json.errors||[]).map(e=>e.field+': '+e.message).join(', ') || json.error || 'error') + '</span>';
+      return;
+    }
+    status.innerHTML = '<span class="ok">saved · ' + (json.commit && json.commit.ok ? 'committed' : 'no commit') + '</span>';
+    setTimeout(() => { status.textContent = ''; load(); }, 1600);
+  }
+
+  load();
 })();
 `;

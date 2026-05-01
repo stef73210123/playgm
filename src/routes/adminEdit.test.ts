@@ -136,6 +136,35 @@ const triviaFile: Record<string, unknown[]> = {
   hockey: [],
   soccer: [],
 };
+
+// Synthetic safety-matrix file used only for PATCH-handler tests. The real
+// matrix is at data/safety/age_feature_matrix.json — read by the synchronous
+// loader in safetyMatrix.ts, which we deliberately do NOT mock here so the
+// loader exercises the on-disk file. This file is consumed by the PATCH
+// handler in adminEdit.ts via fs.readFile (the promises API, mocked below).
+const safetyMatrixFile = {
+  version: '1.0.0',
+  last_updated_iso: '2026-05-01T00:00:00.000Z',
+  age_range: { min: 5, max: 14 },
+  policy_principles: ['When in doubt, default to the more restrictive policy.'],
+  frameworks: { coppa: 'COPPA' },
+  features: [
+    {
+      feature_id: 'ask_scout_llm_open',
+      label: 'Ask Scout — open LLM Q&A',
+      category: 'ai_audio',
+      min_age_default_on: 11,
+      max_age_default_on: 14,
+      ages_with_moderation: [8, 9, 10],
+      ages_blocked: [5, 6, 7],
+      parent_override_allowed: true,
+      requires_parent_consent_under: 13,
+      rationale: 'Open-ended LLM responses for 5–7 risk content drift.',
+      source: 'COPPA + product judgment',
+    },
+  ],
+};
+
 const writes: Array<{ path: string; data: string }> = [];
 
 jest.mock('node:fs/promises', () => {
@@ -144,6 +173,7 @@ jest.mock('node:fs/promises', () => {
     default: {
       readFile: async (p: string): Promise<string> => {
         if (p.endsWith('pgm_card_templates.json')) return JSON.stringify(cardFile);
+        if (p.endsWith('age_feature_matrix.json')) return JSON.stringify(safetyMatrixFile);
         const m = p.match(/trivia_(\w+)\.json$/);
         if (m) {
           const sport = m[1] as keyof typeof triviaFile;
@@ -179,6 +209,7 @@ describe('admin edit routes', () => {
     ['/admin/edit/cards', 'Card Template Inventory'],
     ['/admin/edit/trivia', 'Trivia Question Inventory'],
     ['/admin/edit/advertising', 'Advertising Actuals'],
+    ['/admin/edit/safety', 'Safety Matrix Editor'],
   ])('GET %s renders self-contained HTML', async (url, marker) => {
     const app = await buildApp();
     try {
@@ -465,6 +496,114 @@ describe('admin edit routes', () => {
         payload: { explanation: 'x' },
       });
       expect(res.statusCode).toBe(404);
+    } finally {
+      await app.close();
+    }
+  });
+
+  // ─── Safety matrix ────────────────────────────────────────────────────
+  it('PATCH /admin/api/safety-matrix/:id rejects min_age out of range', async () => {
+    const app = await buildApp();
+    try {
+      const res = await app.inject({
+        method: 'PATCH',
+        url: '/admin/api/safety-matrix/ask_scout_llm_open',
+        payload: { min_age_default_on: 99 },
+      });
+      expect(res.statusCode).toBe(400);
+      const j = res.json() as { ok: boolean; errors: Array<{ field: string }> };
+      expect(j.errors.some((e) => e.field === 'min_age_default_on')).toBe(true);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('PATCH /admin/api/safety-matrix/:id rejects min > max', async () => {
+    const app = await buildApp();
+    try {
+      const res = await app.inject({
+        method: 'PATCH',
+        url: '/admin/api/safety-matrix/ask_scout_llm_open',
+        payload: { min_age_default_on: 14, max_age_default_on: 10 },
+      });
+      expect(res.statusCode).toBe(400);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('PATCH /admin/api/safety-matrix/:id rejects empty rationale', async () => {
+    const app = await buildApp();
+    try {
+      const res = await app.inject({
+        method: 'PATCH',
+        url: '/admin/api/safety-matrix/ask_scout_llm_open',
+        payload: { rationale: '   ' },
+      });
+      expect(res.statusCode).toBe(400);
+      const j = res.json() as { errors: Array<{ field: string }> };
+      expect(j.errors.some((e) => e.field === 'rationale')).toBe(true);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('PATCH /admin/api/safety-matrix/:id rejects requires_parent_consent_under > 18', async () => {
+    const app = await buildApp();
+    try {
+      const res = await app.inject({
+        method: 'PATCH',
+        url: '/admin/api/safety-matrix/ask_scout_llm_open',
+        payload: { requires_parent_consent_under: 25 },
+      });
+      expect(res.statusCode).toBe(400);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('PATCH /admin/api/safety-matrix/:id 404s when feature not found', async () => {
+    const app = await buildApp();
+    try {
+      const res = await app.inject({
+        method: 'PATCH',
+        url: '/admin/api/safety-matrix/no_such_feature',
+        payload: { rationale: 'x' },
+      });
+      expect(res.statusCode).toBe(404);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('PATCH /admin/api/safety-matrix/:id accepts a valid update + writes the file', async () => {
+    const app = await buildApp();
+    try {
+      const res = await app.inject({
+        method: 'PATCH',
+        url: '/admin/api/safety-matrix/ask_scout_llm_open',
+        payload: {
+          rationale: 'Tightened rationale post-2026-04 review.',
+        },
+      });
+      expect(res.statusCode).toBe(200);
+      expect(writes.length).toBe(1);
+      expect(writes[0]!.path).toMatch(/age_feature_matrix\.json$/);
+      expect(writes[0]!.data).toContain('Tightened rationale post-2026-04 review.');
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('PATCH /admin/api/safety-matrix/:id rejects ages_blocked with out-of-range integers', async () => {
+    const app = await buildApp();
+    try {
+      const res = await app.inject({
+        method: 'PATCH',
+        url: '/admin/api/safety-matrix/ask_scout_llm_open',
+        payload: { ages_blocked: [3, 4, 99] },
+      });
+      expect(res.statusCode).toBe(400);
     } finally {
       await app.close();
     }
