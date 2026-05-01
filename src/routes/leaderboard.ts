@@ -20,7 +20,7 @@ export async function leaderboardRoutes(fastify: FastifyInstance): Promise<void>
 
     const { data, error } = await supabase
       .from('profiles')
-      .select('id, handle, level, gm_grade, play_points, streak, xp')
+      .select('id, handle, level, gm_grade, play_points, streak, pp')
       .order('play_points', { ascending: false })
       .limit(limit);
 
@@ -36,7 +36,7 @@ export async function leaderboardRoutes(fastify: FastifyInstance): Promise<void>
         gmGrade: (r['gm_grade'] as string | null) ?? 'C',
         playPoints: (r['play_points'] as number | null) ?? 0,
         streak: (r['streak'] as number | null) ?? 0,
-        xp: (r['xp'] as number | null) ?? 0,
+        pp: (r['pp'] as number | null) ?? 0,
       };
     });
 

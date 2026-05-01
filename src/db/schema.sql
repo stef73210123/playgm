@@ -18,7 +18,7 @@ CREATE EXTENSION IF NOT EXISTS "btree_gin";
 -- Order matters: views → tables → functions → types
 DROP MATERIALIZED VIEW IF EXISTS scouting_reports CASCADE;
 DROP MATERIALIZED VIEW IF EXISTS season_player_stats CASCADE;
-DROP MATERIALIZED VIEW IF EXISTS user_xp_totals CASCADE;
+DROP MATERIALIZED VIEW IF EXISTS user_pp_totals CASCADE;
 DROP TABLE IF EXISTS sports_master_data CASCADE;
 
 -- ─── Enums ──────────────────────────────────────────────────────────────────
@@ -107,7 +107,7 @@ DO $$ BEGIN
 EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
 DO $$ BEGIN
-  CREATE TYPE xp_source AS ENUM (
+  CREATE TYPE pp_source AS ENUM (
     'draft_performance','contest_placement','h2h_win','trivia_correct',
     'streak_reward','achievement','practice_draft','daily_login'
   );
@@ -382,7 +382,7 @@ CREATE TABLE IF NOT EXISTS profiles (
   -- Experience-level (13-tier ladder — see GDD §7)
   level_tier          level_tier          NOT NULL DEFAULT 'Peewee',
   level_index         INT                 NOT NULL DEFAULT 0 CHECK (level_index BETWEEN 0 AND 12),
-  xp                  INT                 NOT NULL DEFAULT 0 CHECK (xp >= 0),
+  pp                  INT                 NOT NULL DEFAULT 0 CHECK (pp >= 0),
   -- Currencies
   play_points         INT                 NOT NULL DEFAULT 0 CHECK (play_points >= 0),
   -- Gameplay
@@ -450,17 +450,17 @@ CREATE TABLE IF NOT EXISTS favorite_teams (
 );
 CREATE INDEX favorite_teams_user_idx ON favorite_teams (user_id);
 
--- ─── xp_events (audit log; basis for user_xp_totals MV) ─────────────────────
-CREATE TABLE IF NOT EXISTS xp_events (
+-- ─── pp_events (audit log; basis for user_pp_totals MV) ─────────────────────
+CREATE TABLE IF NOT EXISTS pp_events (
   id          UUID            PRIMARY KEY DEFAULT gen_random_uuid(),
   user_id     UUID            NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,
-  source      xp_source       NOT NULL,
+  source      pp_source       NOT NULL,
   amount      INT             NOT NULL,
   ref_id      UUID,                                    -- generic ref to the originating row
   created_at  TIMESTAMPTZ     NOT NULL DEFAULT NOW()
 );
-CREATE INDEX xp_events_user_created_idx ON xp_events (user_id, created_at DESC);
-CREATE INDEX xp_events_created_brin ON xp_events USING BRIN (created_at);
+CREATE INDEX pp_events_user_created_idx ON pp_events (user_id, created_at DESC);
+CREATE INDEX pp_events_created_brin ON pp_events USING BRIN (created_at);
 
 -- =============================================================================
 -- C. SUBSCRIPTION & MONETIZATION
@@ -970,23 +970,23 @@ GROUP BY p.id, p.full_name, p.category, p.team_id, s.id, s.season_label;
 CREATE UNIQUE INDEX season_player_stats_uidx ON season_player_stats (player_id, season_id);
 CREATE INDEX season_player_stats_rank_idx ON season_player_stats (category, sport_rank);
 
--- ─── user_xp_totals — denormalized XP rollup ───────────────────────────────
-CREATE MATERIALIZED VIEW IF NOT EXISTS user_xp_totals AS
+-- ─── user_pp_totals — denormalized PP rollup ───────────────────────────────
+CREATE MATERIALIZED VIEW IF NOT EXISTS user_pp_totals AS
 SELECT
   user_id,
-  COALESCE(SUM(amount), 0)                              AS total_xp,
-  MAX(created_at)                                       AS last_xp_at
-FROM xp_events
+  COALESCE(SUM(amount), 0)                              AS total_pp,
+  MAX(created_at)                                       AS last_pp_at
+FROM pp_events
 GROUP BY user_id;
 
-CREATE UNIQUE INDEX user_xp_totals_uidx ON user_xp_totals (user_id);
+CREATE UNIQUE INDEX user_pp_totals_uidx ON user_pp_totals (user_id);
 
 -- Helper function for cron.
 CREATE OR REPLACE FUNCTION refresh_materialized_views() RETURNS VOID
 LANGUAGE plpgsql AS $$
 BEGIN
   REFRESH MATERIALIZED VIEW CONCURRENTLY season_player_stats;
-  REFRESH MATERIALIZED VIEW CONCURRENTLY user_xp_totals;
+  REFRESH MATERIALIZED VIEW CONCURRENTLY user_pp_totals;
 END;
 $$;
 
@@ -1028,7 +1028,7 @@ ALTER TABLE profiles                ENABLE ROW LEVEL SECURITY;
 ALTER TABLE parent_consents         ENABLE ROW LEVEL SECURITY;
 ALTER TABLE age_settings            ENABLE ROW LEVEL SECURITY;
 ALTER TABLE favorite_teams          ENABLE ROW LEVEL SECURITY;
-ALTER TABLE xp_events               ENABLE ROW LEVEL SECURITY;
+ALTER TABLE pp_events               ENABLE ROW LEVEL SECURITY;
 ALTER TABLE subscriptions           ENABLE ROW LEVEL SECURITY;
 ALTER TABLE purchases               ENABLE ROW LEVEL SECURITY;
 ALTER TABLE play_packs              ENABLE ROW LEVEL SECURITY;
@@ -1059,7 +1059,7 @@ DO $$ BEGIN
   CREATE POLICY parent_consents_own       ON parent_consents        USING (user_id = auth.uid()) WITH CHECK (user_id = auth.uid());
   CREATE POLICY age_settings_own          ON age_settings           USING (user_id = auth.uid()) WITH CHECK (user_id = auth.uid());
   CREATE POLICY favorite_teams_own        ON favorite_teams         USING (user_id = auth.uid()) WITH CHECK (user_id = auth.uid());
-  CREATE POLICY xp_events_own             ON xp_events              FOR SELECT USING (user_id = auth.uid());
+  CREATE POLICY pp_events_own             ON pp_events              FOR SELECT USING (user_id = auth.uid());
   CREATE POLICY subscriptions_own         ON subscriptions          USING (user_id = auth.uid()) WITH CHECK (user_id = auth.uid());
   CREATE POLICY purchases_own             ON purchases              FOR SELECT USING (user_id = auth.uid());
   CREATE POLICY play_packs_own            ON play_packs             USING (owner_id = auth.uid()) WITH CHECK (owner_id = auth.uid());
