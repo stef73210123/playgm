@@ -13,6 +13,82 @@ import { EspnAdapter } from '../services/stats/espnAdapter.js';
 import { getStatsAdapter } from '../services/stats/index.js';
 import type { League, RosterEntry } from '../services/stats/types.js';
 
+/**
+ * Manager / coach position abbrevs that ESPN sometimes emits in roster blobs.
+ * Matched case-insensitively against `position`. The list intentionally errs
+ * on the wide side — adding "Asst" / "Asst." / "Coordinator" catches common
+ * staff variants we don't want in the player tier files.
+ */
+const MANAGER_POSITION_TOKENS = new Set([
+  'MGR',
+  'HC',
+  'OC',
+  'DC',
+  'STC',
+  'AHC',
+  'ASST',
+  'ASST.',
+  'COACH',
+  'MANAGER',
+  'HEAD COACH',
+  'OFFENSIVE COORDINATOR',
+  'DEFENSIVE COORDINATOR',
+  'SPECIAL TEAMS COORDINATOR',
+  'COORDINATOR',
+]);
+
+export function isManagerOrCoach(position: string | null | undefined): boolean {
+  if (!position) return false;
+  const norm = position.trim().toUpperCase();
+  if (MANAGER_POSITION_TOKENS.has(norm)) return true;
+  // Heuristic: any token containing 'COACH' or 'MANAGER' (e.g. "Pitching Coach",
+  // "Bench Coach", "Bullpen Coach", "General Manager") is staff, not a player.
+  if (/COACH|MANAGER/.test(norm)) return true;
+  return false;
+}
+
+/**
+ * True when the player has effectively zero stats — every numeric field is 0
+ * (or the field is missing) AND games_played is 0/missing. Players with at
+ * least one non-zero metric stay.
+ */
+export function hasOnlyZeroStats(stats: Record<string, number> | undefined | null): boolean {
+  if (!stats) return true;
+  const entries = Object.entries(stats);
+  if (entries.length === 0) return true;
+  const gp = stats['games_played'] ?? 0;
+  if (gp > 0) return false;
+  for (const [, v] of entries) {
+    if (typeof v === 'number' && Number.isFinite(v) && v !== 0) return false;
+  }
+  return true;
+}
+
+export interface FilterResult {
+  kept: PlayerCacheEntry[];
+  dropped_manager: number;
+  dropped_zero_stat: number;
+}
+
+/** Apply the manager + zero-stat filter and report counts. */
+export function applyCacheFilter(players: PlayerCacheEntry[]): FilterResult {
+  const kept: PlayerCacheEntry[] = [];
+  let dropped_manager = 0;
+  let dropped_zero_stat = 0;
+  for (const p of players) {
+    if (isManagerOrCoach(p.position)) {
+      dropped_manager++;
+      continue;
+    }
+    if (hasOnlyZeroStats(p.stats)) {
+      dropped_zero_stat++;
+      continue;
+    }
+    kept.push(p);
+  }
+  return { kept, dropped_manager, dropped_zero_stat };
+}
+
 export interface PlayerCacheEntry {
   external_id: string;
   full_name: string;
@@ -151,11 +227,24 @@ export async function pullLeague(
     await new Promise((res) => setTimeout(res, 30));
   }
 
-  const teamCount = new Set(players.map((p) => p.team_abbr)).size;
-  const playersWithAnyStat = players.filter((p) => Object.keys(p.stats).length > 0).length;
-  const byGroup: Record<string, number> = {};
-  for (const p of players) byGroup[p.position_group] = (byGroup[p.position_group] ?? 0) + 1;
+  // Apply manager + zero-stat filter at write time so the cache is clean
+  // by construction. Counts surface in the notes string + totals.
+  const before = players.length;
+  const { kept, dropped_manager, dropped_zero_stat } = applyCacheFilter(players);
+  // eslint-disable-next-line no-console
+  console.log(
+    `[pull:${league}] filter: kept ${kept.length}/${before}` +
+      ` (-${dropped_manager} manager/coach, -${dropped_zero_stat} zero-stat)`,
+  );
 
+  const teamCount = new Set(kept.map((p) => p.team_abbr)).size;
+  const playersWithAnyStat = kept.filter((p) => Object.keys(p.stats).length > 0).length;
+  const byGroup: Record<string, number> = {};
+  for (const p of kept) byGroup[p.position_group] = (byGroup[p.position_group] ?? 0) + 1;
+
+  const filterNote =
+    `Filter applied: dropped ${dropped_manager} manager/coach + ${dropped_zero_stat}` +
+    ` zero-stat (kept ${kept.length}/${before}).`;
   const cache: SeasonCache = {
     league,
     season: opts.season,
@@ -163,17 +252,17 @@ export async function pullLeague(
     source: 'espn-public-api',
     source_url_pattern: 'https://site.api.espn.com/... + https://sports.core.api.espn.com/...',
     fetched_at: new Date().toISOString(),
-    notes: opts.notes,
+    notes: `${opts.notes} ${filterNote}`.trim(),
     totals: {
       teams: teamCount,
-      players: players.length,
+      players: kept.length,
       players_with_any_stat: playersWithAnyStat,
       by_position_group: byGroup,
     },
-    players,
+    players: kept,
   };
   writeCacheAtomic(opts.outFile, cache);
   // eslint-disable-next-line no-console
-  console.log(`[pull:${league}] wrote ${players.length} players → ${opts.outFile}`);
+  console.log(`[pull:${league}] wrote ${kept.length} players → ${opts.outFile}`);
   return cache;
 }
