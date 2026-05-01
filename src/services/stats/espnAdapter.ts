@@ -262,9 +262,31 @@ interface EspnRosterAthlete {
   active?: boolean;
   position?: { abbreviation?: string };
 }
+/**
+ * ESPN's roster shape varies by sport:
+ *
+ *   Wrapped (NFL, MLB, NHL):
+ *     { athletes: [{ position: 'offense', items: [athlete, ...] }, ...] }
+ *
+ *   Flat (NBA, MLS):
+ *     { athletes: [athlete, athlete, ...] }
+ *
+ * `EspnRosterAthletesEntry` is the union — a wrapper or a bare athlete.
+ */
+type EspnRosterAthletesEntry =
+  | { position?: string; items?: EspnRosterAthlete[] }
+  | EspnRosterAthlete;
+
 interface EspnRosterResponse {
   team?: EspnTeamRef;
-  athletes?: Array<{ position?: string; items?: EspnRosterAthlete[] }>;
+  athletes?: EspnRosterAthletesEntry[];
+}
+
+/** True when an entry has an `items` array — i.e. ESPN's NFL/MLB/NHL shape. */
+function isWrappedAthletesBlock(
+  entry: EspnRosterAthletesEntry,
+): entry is { position?: string; items?: EspnRosterAthlete[] } {
+  return Array.isArray((entry as { items?: unknown }).items);
 }
 
 export class EspnAdapter implements StatsAdapter {
@@ -295,33 +317,41 @@ export class EspnAdapter implements StatsAdapter {
         const rosterUrl = `https://site.api.espn.com/apis/site/v2/sports/${sportPath}/teams/${teamRef.id}/roster`;
         const r = await getJson<EspnRosterResponse>(rosterUrl);
         const blocks = r.athletes ?? [];
+        // Flatten both shapes:
+        //   wrapped → blocks[i].items[j]   (NFL/MLB/NHL)
+        //   flat    → blocks[i] is the athlete itself  (NBA/MLS)
+        const items: EspnRosterAthlete[] = [];
         for (const block of blocks) {
-          const items = block.items ?? [];
-          for (const a of items) {
-            const rawPos = a.position?.abbreviation ?? '';
-            entries.push({
-              id: `espn:${a.id}`,
-              name: a.fullName ?? `${a.firstName ?? ''} ${a.lastName ?? ''}`.trim(),
-              firstName: a.firstName,
-              lastName: a.lastName,
-              team: teamRef.displayName ?? teamRef.abbreviation ?? '',
-              teamAbbr: teamRef.abbreviation ?? '',
-              teamId: teamRef.id,
-              position: rawPos,
-              positionGroup: classifyPositionGroup(league, rawPos),
-              jerseyNumber: a.jersey ? Number(a.jersey) || null : null,
-              heightInches: a.height ?? null,
-              weightLb: a.weight ?? null,
-              dateOfBirth: a.dateOfBirth ?? null,
-              hometown: a.birthPlace
-                ? [a.birthPlace.city, a.birthPlace.state, a.birthPlace.country].filter(Boolean).join(', ')
-                : null,
-              yearsInLeague: a.experience?.years ?? null,
-              isActive: a.active ?? true,
-              teamColorPrimary: teamRef.color ? `#${teamRef.color}` : undefined,
-              teamColorSecondary: teamRef.alternateColor ? `#${teamRef.alternateColor}` : undefined,
-            });
+          if (isWrappedAthletesBlock(block)) {
+            for (const a of block.items ?? []) items.push(a);
+          } else if ((block as EspnRosterAthlete).id) {
+            items.push(block as EspnRosterAthlete);
           }
+        }
+        for (const a of items) {
+          const rawPos = a.position?.abbreviation ?? '';
+          entries.push({
+            id: `espn:${a.id}`,
+            name: a.fullName ?? `${a.firstName ?? ''} ${a.lastName ?? ''}`.trim(),
+            firstName: a.firstName,
+            lastName: a.lastName,
+            team: teamRef.displayName ?? teamRef.abbreviation ?? '',
+            teamAbbr: teamRef.abbreviation ?? '',
+            teamId: teamRef.id,
+            position: rawPos,
+            positionGroup: classifyPositionGroup(league, rawPos),
+            jerseyNumber: a.jersey ? Number(a.jersey) || null : null,
+            heightInches: a.height ?? null,
+            weightLb: a.weight ?? null,
+            dateOfBirth: a.dateOfBirth ?? null,
+            hometown: a.birthPlace
+              ? [a.birthPlace.city, a.birthPlace.state, a.birthPlace.country].filter(Boolean).join(', ')
+              : null,
+            yearsInLeague: a.experience?.years ?? null,
+            isActive: a.active ?? true,
+            teamColorPrimary: teamRef.color ? `#${teamRef.color}` : undefined,
+            teamColorSecondary: teamRef.alternateColor ? `#${teamRef.alternateColor}` : undefined,
+          });
         }
       } catch (err) {
         // eslint-disable-next-line no-console
