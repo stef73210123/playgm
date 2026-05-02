@@ -33,6 +33,7 @@ import { statLineRoutes } from './routes/statLines.js';
 import { scheduleRoutes, startScheduleRefreshJobs } from './routes/schedule.js';
 import { authRoutes } from './routes/auth.js';
 import { meRoutes } from './routes/me.js';
+import { syncRoutes } from './routes/sync.js';
 import { tradeRoutes } from './routes/trade.js';
 import { startStatsRefreshJobs } from './jobs/refreshStats.js';
 import { startHighlightsCron } from './jobs/highlightsCron.js';
@@ -111,6 +112,7 @@ await server.register(statLineRoutes, { prefix: '/' });
 await server.register(scheduleRoutes, { prefix: '/' });
 await server.register(authRoutes, { prefix: '/' });
 await server.register(meRoutes, { prefix: '/' });
+await server.register(syncRoutes, { prefix: '/' });
 await server.register(tradeRoutes, { prefix: '/' });
 
 // ─── Start ───────────────────────────────────────────────────────────────────

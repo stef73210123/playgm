@@ -67,3 +67,5 @@ export const loadTriggersSpec = (): unknown => read('cards/pgm_triggers.json');
 export const loadStatResolutionSpec = (): unknown => read('cards/pgm_stat_resolution.json');
 export const loadPacksSpec = (): unknown => read('cards/pgm_packs.json');
 export const loadPityTimersSpec = (): unknown => read('cards/pgm_pity_timers.json');
+export const loadTradeRulesSpec = (): unknown => read('economy/pgm_trade_rules.json');
+export const loadScanGradeRaritySpec = (): unknown => read('cards/scan_grade_to_rarity.json');
