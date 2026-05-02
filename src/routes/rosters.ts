@@ -14,14 +14,25 @@
  *   POST /drafts/:id/pick                  — record a snake-draft pick onto a specific roster
  */
 
-import type { FastifyInstance } from 'fastify';
+import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { requireAuth, type AuthenticatedRequest } from '../middleware/auth.js';
-import { validateRoster, type RosterCard } from '../economy/index.js';
+import { validateRoster, isDraftModeAllowed, type RosterCard } from '../economy/index.js';
+import type { SubscriptionTierId } from '../economy/types.js';
 import {
   computeWeeklyProjection,
   type WeeklyProjection,
 } from '../services/weeklyProjection.js';
+
+/**
+ * Resolve the caller's subscription tier. Same dev shim as practiceDrafts.ts
+ * — replace with `request.user.subscription_tier` once the auth task ships.
+ */
+function resolveTier(req: FastifyRequest): SubscriptionTierId {
+  const hdr = req.headers['x-subscription-tier'];
+  if (hdr === 'starter' || hdr === 'playmaker' || hdr === 'champion') return hdr;
+  return 'free';
+}
 
 const pickSchema = z.object({
   rosterId: z.string().min(1),
@@ -75,6 +86,25 @@ export async function rostersRoutes(fastify: FastifyInstance): Promise<void> {
     const parsed = createRosterSchema.safeParse(req.body);
     if (!parsed.success) return reply.code(400).send({ error: parsed.error.flatten() });
     const { profileId } = req as AuthenticatedRequest;
+
+    // Tier gate — Free tier is snake-only. Cap (auction) drafts unlock at
+    // Starter. Server-side enforcement so the client UI can't bypass it.
+    const tier = resolveTier(req);
+    if (!isDraftModeAllowed(tier, parsed.data.draftMode)) {
+      return reply.code(403).send({
+        ok: false,
+        error: {
+          code: 'DRAFT_MODE_LOCKED',
+          message:
+            parsed.data.draftMode === 'cap'
+              ? 'Cap (auction) drafts unlock with the Starter subscription. Upgrade to try cap mode.'
+              : `Your tier doesn't allow ${parsed.data.draftMode} drafts.`,
+          tier,
+          requested_mode: parsed.data.draftMode,
+        },
+      });
+    }
+
     return {
       id: `roster_stub_${Date.now()}`,
       profileId,
