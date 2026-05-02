@@ -268,9 +268,22 @@ export async function cardScanRoutes(fastify: FastifyInstance): Promise<void> {
       const guess = extraction.template_id_guess;
       const template = guess ? findTemplateById(guess) : null;
 
+      // IP scope: when the scanned card is NOT a recognized PlayGM template
+      // (template === null), strip manufacturer-design-derived fields from
+      // the response. We only surface factual data about the depicted
+      // athlete: player_name, team, year, sport. See docs/card-scan-ip-policy.md.
+      const sanitizedExtraction: CardScanExtraction = template
+        ? extraction
+        : {
+            ...extraction,
+            rarity: null,
+            card_type: null,
+            template_id_guess: null,
+          };
+
       const response: ScanResponse = {
         match_status: template ? 'matched' : 'unrecognized',
-        extraction,
+        extraction: sanitizedExtraction,
         template,
       };
       applyAdvisoryHeaders(reply, decision);

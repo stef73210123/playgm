@@ -37,9 +37,28 @@ export type Rarity = 'common' | 'uncommon' | 'rare' | 'epic' | 'legendary';
 
 export type CardType = 'stat_boost' | 'ability' | 'hybrid';
 
+/**
+ * IP-aware card-scan extraction shape.
+ *
+ * For NON-PlayGM cards (Topps, Panini, Upper Deck, Bowman, etc.) we extract
+ * ONLY factual data — player name, team, year, sport. These are facts about
+ * the depicted athlete, not copyrightable elements of the card design. We
+ * deliberately DO NOT extract or echo manufacturer rarity tiers, set names,
+ * card numbers, holographic foils, autographs, or any other branded design
+ * element from third-party trading cards. See docs/card-scan-ip-policy.md.
+ *
+ * For PlayGM template cards (which we authored) `rarity`, `card_type`, and
+ * `template_id_guess` remain valid because we own that design.
+ *
+ * The route handler enforces: when `template_id_guess` is null (i.e. the
+ * card is NOT a recognized PlayGM template), `rarity` and `card_type` are
+ * stripped from the response before it reaches the client.
+ */
 export interface CardScanExtraction {
   player_name: string | null;
   team: string | null;
+  /** 4-digit season/year if visible on the card (e.g. "2024"). Factual data. */
+  year: string | null;
   sport: Sport | null;
   rarity: Rarity | null;
   card_type: CardType | null;
@@ -50,6 +69,21 @@ export interface CardScanExtraction {
 
 // ─── System prompt ───────────────────────────────────────────────────────────
 
+// IP-aware system prompt. Two card classes are handled distinctly:
+//
+//   1. PlayGM template cards (cards we authored). Identify the template_id
+//      from the visible design and fill rarity / card_type per the design.
+//
+//   2. Third-party / real trading cards (Topps, Panini, Upper Deck, Bowman,
+//      manufacturers we do not own). Extract ONLY factual data about the
+//      depicted athlete: player name, team, season/year, sport. Do NOT
+//      attempt to read manufacturer rarity tiers, set names, parallel
+//      identifiers, autographs, or any other branded design element. Set
+//      rarity, card_type, and template_id_guess to null. We use the player
+//      name to look the athlete up in our own roster and grant a PlayGM-
+//      designed scout card; we never reproduce the scanned card.
+//
+// See docs/card-scan-ip-policy.md for the full policy.
 const SCAN_SYSTEM_PROMPT = `You are a vision OCR system for the PlayGM trading card app. You receive a single image of a trading card and must return STRICT JSON describing what you see.
 
 Output rules:
@@ -58,6 +92,7 @@ Output rules:
   {
     "player_name": string | null,
     "team": string | null,
+    "year": string | null,
     "sport": "basketball" | "baseball" | "football" | "hockey" | "soccer" | null,
     "rarity": "common" | "uncommon" | "rare" | "epic" | "legendary" | null,
     "card_type": "stat_boost" | "ability" | "hybrid" | null,
@@ -67,8 +102,11 @@ Output rules:
   }
 - Use null when a field is not visible or you are unsure.
 - "confidence" is a single number between 0 and 1 representing your overall confidence in the extraction.
-- "raw_text_extracted" should be ALL legible text from the card, in reading order, separated by newlines.
-- "template_id_guess" should be your best guess at the PlayGM template_id if the card is clearly a PlayGM card (e.g. "sb_common_p5", "ab_uncommon_win"). Use null for non-PlayGM cards (Topps, Panini, Upper Deck, etc.).
+- "year" is the 4-digit season/year visible on the card (e.g. "2024", "1989") if present, otherwise null.
+- "template_id_guess" is your best guess at the PlayGM template_id ONLY if the card is clearly a PlayGM-authored design (e.g. "sb_common_p5", "ab_uncommon_win"). Set to null for any third-party manufacturer card (Topps, Panini, Upper Deck, Bowman, etc.).
+- For third-party manufacturer cards: extract ONLY player_name, team, year, sport. Set rarity, card_type, and template_id_guess to null. Do NOT report the manufacturer's rarity tier, set name, parallel, autograph, or other branded design elements. We are interested only in the depicted athlete.
+- For PlayGM template cards: rarity and card_type may be filled per the visible design.
+- "raw_text_extracted" should be a SHORT plain-text echo of just the player name and team you identified (max ~60 characters). Do NOT transcribe the full back-of-card content, copyright notices, manufacturer set names, or other text.
 - Do NOT invent values. If the card is unreadable, set confidence near 0 and most fields to null but still return the JSON envelope.`;
 
 // ─── Public API ──────────────────────────────────────────────────────────────
@@ -153,6 +191,7 @@ export function parseExtraction(raw: string): CardScanExtraction {
   return {
     player_name: nullableString(o['player_name']),
     team: nullableString(o['team']),
+    year: nullableYear(o['year']),
     sport: nullableEnum<Sport>(o['sport'], [
       'basketball', 'baseball', 'football', 'hockey', 'soccer',
     ]),
@@ -164,8 +203,16 @@ export function parseExtraction(raw: string): CardScanExtraction {
     ]),
     template_id_guess: nullableString(o['template_id_guess']),
     confidence: clamp(typeof o['confidence'] === 'number' ? o['confidence'] : 0, 0, 1),
-    raw_text_extracted: typeof o['raw_text_extracted'] === 'string' ? o['raw_text_extracted'] : '',
+    raw_text_extracted: typeof o['raw_text_extracted'] === 'string' ? o['raw_text_extracted'].slice(0, 120) : '',
   };
+}
+
+/** 4-digit year guard. Anything outside 1900-2100 returns null. */
+function nullableYear(v: unknown): string | null {
+  const s = nullableString(v);
+  if (!s) return null;
+  const m = s.match(/(19|20|21)\d{2}/);
+  return m ? m[0] : null;
 }
 
 function nullableString(v: unknown): string | null {
