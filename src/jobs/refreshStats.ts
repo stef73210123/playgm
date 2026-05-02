@@ -4,6 +4,10 @@
  * Schedule (America/New_York):
  *   - 04:00 ET — full refresh, staggered 5 min apart per league:
  *       NFL 04:00, NBA 04:05, MLB 04:10, NHL 04:15, MLS 04:20.
+ *   - 05:00 ET — premium SportsDB highlights backfill (idempotent, only
+ *     refreshes rows where meta_json.video_highlight_pulled_at is missing
+ *     OR older than 30 days). Runs after the stats refresh so any teams
+ *     newly inserted by populate are picked up the same morning.
  *   - Hourly 12:00–23:00 ET on game days, only for leagues with active games.
  *
  * Idempotency: each per-league refresh writes to a .tmp file then renames
@@ -16,6 +20,8 @@
  * this will dual-write to a `pipeline_runs` table.
  */
 import cron from 'node-cron';
+import { spawn } from 'node:child_process';
+import path from 'node:path';
 import type { FastifyBaseLogger } from 'fastify';
 import { pullLeague, cachePath } from '../scripts/pull-stats-shared.js';
 import { clearCacheLookups } from '../services/ratings/cacheLookup.js';
@@ -193,8 +199,39 @@ export function startStatsRefreshJobs(log?: FastifyBaseLogger): RefreshJobsHandl
     );
   }
 
+  // 05:00 ET — premium SportsDB highlights backfill. Runs the
+  // `pull-highlights` script as a child process so it inherits all the
+  // env-loader plumbing (Supabase + SPORTSDB_V2_KEY) without us having
+  // to re-import the script's main inside the long-lived server. The
+  // script itself is idempotent — only refreshes rows where
+  // meta_json.video_highlight_pulled_at is missing OR > 30 days old.
+  tasks.push(
+    cron.schedule(
+      '0 5 * * *',
+      () => {
+        void runHighlightsRefresh(log);
+      },
+      { timezone: tz },
+    ),
+  );
+
+  // 06:00 ET Sunday — weekly forced refresh of meta_json.highlight_playlist.
+  // The daily 05:00 ET cron only refreshes records whose
+  // video_highlight_pulled_at is stale; the weekly job re-resolves every
+  // record's playlist (--force) so YouTube embeddability flips (channel
+  // takes a clip private, etc.) propagate within 7 days.
+  tasks.push(
+    cron.schedule(
+      '0 6 * * 0',
+      () => {
+        void runHighlightsRefresh(log, ['--force']);
+      },
+      { timezone: tz },
+    ),
+  );
+
   log?.info(
-    `[refreshStats] cron scheduled — daily 04:00 ET (staggered 5 min) + hourly 12:00–23:00 ET (in-season only). tz=${tz}`,
+    `[refreshStats] cron scheduled — daily 04:00 ET (stats, staggered 5 min) + 05:00 ET (highlights) + Sun 06:00 ET (forced playlist refresh) + hourly 12:00–23:00 ET (in-season only). tz=${tz}`,
   );
 
   return {
@@ -202,6 +239,67 @@ export function startStatsRefreshJobs(log?: FastifyBaseLogger): RefreshJobsHandl
       for (const t of tasks) t.stop();
     },
   };
+}
+
+// ─── SportsDB highlights pipeline ───────────────────────────────────────────
+
+interface HighlightsStatus {
+  lastRunAt: string | null;
+  lastSuccessAt: string | null;
+  lastError: string | null;
+  /** Last full output line — captured as a debugging breadcrumb. */
+  lastSummary: string | null;
+}
+
+const HIGHLIGHTS_STATUS: HighlightsStatus = {
+  lastRunAt: null,
+  lastSuccessAt: null,
+  lastError: null,
+  lastSummary: null,
+};
+
+function runHighlightsRefresh(log?: FastifyBaseLogger, extraArgs: string[] = []): Promise<void> {
+  return new Promise((resolve) => {
+    HIGHLIGHTS_STATUS.lastRunAt = new Date().toISOString();
+    log?.info(`[refreshStats:highlights] starting${extraArgs.length ? ` (args: ${extraArgs.join(' ')})` : ''}`);
+    // tsx with the env-loader — same invocation path as `npm run pull:highlights`.
+    const cwd = path.resolve(process.cwd());
+    const child = spawn(
+      'npx',
+      ['tsx', '--import', './src/env-loader.ts', 'src/scripts/pull-highlights.ts', ...extraArgs],
+      { cwd, env: process.env, stdio: ['ignore', 'pipe', 'pipe'] },
+    );
+    let lastLine = '';
+    child.stdout.on('data', (b: Buffer) => {
+      const s = b.toString();
+      lastLine = s.trim().split('\n').pop() ?? lastLine;
+    });
+    child.stderr.on('data', (b: Buffer) => {
+      log?.warn({ msg: b.toString().trim() }, '[refreshStats:highlights] stderr');
+    });
+    child.on('close', (code) => {
+      const ts = new Date().toISOString();
+      if (code === 0) {
+        HIGHLIGHTS_STATUS.lastSuccessAt = ts;
+        HIGHLIGHTS_STATUS.lastError = null;
+        HIGHLIGHTS_STATUS.lastSummary = lastLine;
+        log?.info(`[refreshStats:highlights] OK — ${lastLine}`);
+      } else {
+        HIGHLIGHTS_STATUS.lastError = `exit ${code}`;
+        log?.error(`[refreshStats:highlights] FAILED exit=${code}`);
+      }
+      resolve();
+    });
+  });
+}
+
+/** Used by tests + admin status surfaces. */
+export async function _runHighlightsRefreshNow(log?: FastifyBaseLogger): Promise<void> {
+  await runHighlightsRefresh(log);
+}
+
+export function getHighlightsPipelineStatus(): HighlightsStatus {
+  return { ...HIGHLIGHTS_STATUS };
 }
 
 /** /admin/status surface. */
