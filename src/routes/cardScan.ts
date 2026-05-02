@@ -32,12 +32,17 @@ import {
   extractCardFromImage,
   CardScanLLMError,
   type CardScanExtraction,
+  type Rarity as CardScanRarity,
 } from '../services/cardScanLLM.js';
 import {
   checkAndIncrement,
   getQuota,
   type LimiterDecision,
 } from '../services/cardScanLimiter.js';
+import { matchPlayer, type MatchResult, type IndexedPlayer } from '../services/cardScan/playerMatcher.js';
+import { grantScoutCard, type GrantOutcome } from '../services/cardScan/scoutCardGrant.js';
+import { supabase } from '../db/client.js';
+import type { Grade } from '../services/ratings/computeRatings.js';
 import type { SubscriptionTierId } from '../economy/types.js';
 
 // ─── Card template library (loaded once at startup) ─────────────────────────
@@ -112,12 +117,34 @@ interface ScanBody {
   media_type?: 'image/jpeg' | 'image/png' | 'image/webp' | 'image/gif';
 }
 
-type MatchStatus = 'matched' | 'unrecognized';
+type MatchStatus = 'matched' | 'unrecognized' | 'scout_unlocked' | 'multiple_players' | 'already_owned';
+
+/** When a third-party card maps to one of OUR roster players, the route
+ *  grants a PlayGM scout card. The unlocked card metadata rides on the
+ *  response so the client can render the unlock animation without a
+ *  follow-up request. See docs/card-scan-ip-policy.md "Unlock flow". */
+export interface UnlockedScoutCard {
+  template_id: string;
+  player_id: string;
+  player_name: string;
+  team: string | null;
+  position: string | null;
+  league: string;
+  rarity: CardScanRarity;
+  grade: Grade;
+  needs_more_games: boolean;
+}
 
 export interface ScanResponse {
   match_status: MatchStatus;
   extraction: CardScanExtraction;
   template: CardTemplate | null;
+  /** Present when match_status === 'scout_unlocked'. */
+  unlocked?: UnlockedScoutCard;
+  /** Present when match_status === 'multiple_players'. */
+  candidates?: Array<Pick<IndexedPlayer, 'external_id' | 'full_name' | 'team' | 'league'>>;
+  /** Present when match_status === 'already_owned'. */
+  already_owned?: { player_id: string; player_name: string; pp_refresh: number };
 }
 
 interface QuotaResponse {
@@ -149,6 +176,26 @@ const MAX_BASE64_BYTES = Math.ceil((15 * 1024 * 1024) * 4 / 3);
 const ALLOWED_MEDIA_TYPES = new Set([
   'image/jpeg', 'image/png', 'image/webp', 'image/gif',
 ]);
+
+/** Look up the player's PlayGM overall_grade from the player_ratings table.
+ *  Falls back to 'C' when the player has no rating yet — that's a deliberately
+ *  middling default so a brand-new rookie still grants a Common card rather
+ *  than blocking the unlock entirely. */
+async function fetchPlayerGrade(external_id: string): Promise<Grade> {
+  try {
+    const { data } = await supabase
+      .from('player_ratings')
+      .select('overall_grade, overall_tier')
+      .eq('external_id', external_id)
+      .maybeSingle();
+    if (!data) return 'C';
+    return ((data as { overall_grade?: Grade; overall_tier?: Grade }).overall_grade
+      ?? (data as { overall_tier?: Grade }).overall_tier
+      ?? 'C') as Grade;
+  } catch {
+    return 'C';
+  }
+}
 
 // ─── Auth shim ────────────────────────────────────────────────────────────────
 // TODO(auth): replace with `request.user.{id, subscription_tier}` once the
@@ -281,13 +328,108 @@ export async function cardScanRoutes(fastify: FastifyInstance): Promise<void> {
             template_id_guess: null,
           };
 
-      const response: ScanResponse = {
-        match_status: template ? 'matched' : 'unrecognized',
-        extraction: sanitizedExtraction,
-        template,
-      };
-      applyAdvisoryHeaders(reply, decision);
-      return reply.send(response);
+      // PlayGM template hit — return the existing matched envelope unchanged.
+      if (template) {
+        const response: ScanResponse = {
+          match_status: 'matched',
+          extraction: sanitizedExtraction,
+          template,
+        };
+        applyAdvisoryHeaders(reply, decision);
+        return reply.send(response);
+      }
+
+      // ─── Third-party card → player lookup + scout-card grant ───────────────
+      // Per docs/card-scan-ip-policy.md, we never reproduce the manufacturer's
+      // design. Instead we look the depicted athlete up in our own roster and
+      // grant a PlayGM-designed scout card sized by the player's overall_grade.
+      const playerName = sanitizedExtraction.player_name;
+      if (!playerName) {
+        applyAdvisoryHeaders(reply, decision);
+        return reply.send({
+          match_status: 'unrecognized',
+          extraction: sanitizedExtraction,
+          template: null,
+        } satisfies ScanResponse);
+      }
+
+      const matchResult: MatchResult = matchPlayer({
+        player_name: playerName,
+        sport: sanitizedExtraction.sport,
+        team: sanitizedExtraction.team,
+      });
+
+      if (matchResult.kind === 'none') {
+        applyAdvisoryHeaders(reply, decision);
+        return reply.send({
+          match_status: 'unrecognized',
+          extraction: sanitizedExtraction,
+          template: null,
+        } satisfies ScanResponse);
+      }
+
+      if (matchResult.kind === 'multiple') {
+        applyAdvisoryHeaders(reply, decision);
+        return reply.send({
+          match_status: 'multiple_players',
+          extraction: sanitizedExtraction,
+          template: null,
+          candidates: matchResult.players.slice(0, 6).map((p) => ({
+            external_id: p.external_id,
+            full_name: p.full_name,
+            team: p.team,
+            league: p.league,
+          })),
+        } satisfies ScanResponse);
+      }
+
+      // Single match → look up the player's PlayGM grade then grant.
+      const player = matchResult.player;
+      const grade = await fetchPlayerGrade(player.external_id);
+
+      try {
+        const outcome: GrantOutcome = await grantScoutCard({
+          user_id,
+          player,
+          grade,
+        });
+
+        if (outcome.kind === 'already_owned') {
+          applyAdvisoryHeaders(reply, decision);
+          return reply.send({
+            match_status: 'already_owned',
+            extraction: sanitizedExtraction,
+            template: null,
+            already_owned: {
+              player_id: outcome.player_id,
+              player_name: player.full_name,
+              pp_refresh: outcome.pp_refresh,
+            },
+          } satisfies ScanResponse);
+        }
+
+        applyAdvisoryHeaders(reply, decision);
+        return reply.send({
+          match_status: 'scout_unlocked',
+          extraction: sanitizedExtraction,
+          template: null,
+          unlocked: {
+            template_id: outcome.template_id,
+            player_id: outcome.player_id,
+            player_name: player.full_name,
+            team: player.team,
+            position: player.position,
+            league: player.league,
+            rarity: outcome.rarity,
+            grade: outcome.grade,
+            needs_more_games: outcome.needs_more_games,
+          },
+        } satisfies ScanResponse);
+      } catch (err) {
+        fastify.log.error({ msg: 'scout card grant failed', err: String(err) });
+        applyAdvisoryHeaders(reply, decision);
+        return reply.code(502).send({ error: 'Grant failed', detail: String(err) });
+      }
     },
   );
 
