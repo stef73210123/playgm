@@ -14,7 +14,7 @@
  */
 import type { FastifyInstance } from 'fastify';
 import { execSync } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { createReadStream, existsSync, statSync } from 'node:fs';
 import path from 'node:path';
 import {
   probeAnthropic,
@@ -104,6 +104,8 @@ const ROUTE_PURPOSES: Record<string, string> = {
   'GET /admin/api/advertising': 'Advertising report (all channels)',
   'GET /admin/edit/safety': 'Per-age safety/feature matrix editor',
   'GET /admin/api/safety-matrix': 'Per-age safety/feature matrix (full)',
+  'GET /admin/docs/:slot': 'Serve admin docs (GDD, business plan, financial model)',
+  'GET /admin/api/docs': 'Admin docs presence + slot metadata',
 };
 
 function pickPurpose(method: string, urlPath: string): string {
@@ -284,6 +286,73 @@ export async function adminRoutes(fastify: FastifyInstance): Promise<void> {
     return await getHighlightsCoverage();
   });
 
+  // ─── Admin Documents ─────────────────────────────────────────────────────
+  // Serves GDD, business plan, and financial model from docs/admin/.
+  // Each slot maps to a base filename; we auto-detect the extension by
+  // preference order so Stefan can drop in a .pdf, .xlsx, .docx, or .md
+  // without re-wiring the route. If nothing is present we return a friendly
+  // 404 with the path to drop a replacement at.
+  const DOC_SLOTS: Record<string, { base: string; exts: string[] }> = {
+    gdd: { base: 'GDD', exts: ['pdf', 'docx', 'md'] },
+    'business-plan': { base: 'business-plan', exts: ['pdf', 'docx', 'md'] },
+    'financial-model': { base: 'financial-model', exts: ['xlsx', 'pdf', 'docx', 'md'] },
+  };
+
+  const DOC_CONTENT_TYPES: Record<string, string> = {
+    pdf: 'application/pdf',
+    docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    md: 'text/markdown; charset=utf-8',
+  };
+
+  function findDocFile(slot: keyof typeof DOC_SLOTS): { ext: string; abs: string } | null {
+    const def = DOC_SLOTS[slot];
+    if (!def) return null;
+    const dir = path.join(PROJECT_ROOT, 'docs', 'admin');
+    for (const ext of def.exts) {
+      const abs = path.join(dir, `${def.base}.${ext}`);
+      if (existsSync(abs) && statSync(abs).isFile()) {
+        return { ext, abs };
+      }
+    }
+    return null;
+  }
+
+  fastify.get<{ Params: { slot: string } }>('/admin/docs/:slot', async (req, reply) => {
+    const slot = String(req.params.slot ?? '').toLowerCase() as keyof typeof DOC_SLOTS;
+    const def = DOC_SLOTS[slot];
+    if (!def) {
+      reply.code(404).type('text/plain; charset=utf-8');
+      return `Unknown document slot: ${slot}\n\nValid slots: ${Object.keys(DOC_SLOTS).join(', ')}`;
+    }
+    const found = findDocFile(slot);
+    if (!found) {
+      reply.code(404).type('text/plain; charset=utf-8');
+      return (
+        `Document not found.\n\n` +
+        `Drop the current ${slot} file at one of:\n` +
+        def.exts.map((e) => `  docs/admin/${def.base}.${e}`).join('\n') +
+        `\n\nThe admin dashboard tile auto-detects the extension.\n`
+      );
+    }
+    const contentType = DOC_CONTENT_TYPES[found.ext] ?? 'application/octet-stream';
+    reply.type(contentType);
+    return reply.send(createReadStream(found.abs));
+  });
+
+  fastify.get('/admin/api/docs', async () => {
+    const out: Record<string, { present: boolean; ext: string | null; url: string }> = {};
+    for (const slot of Object.keys(DOC_SLOTS) as Array<keyof typeof DOC_SLOTS>) {
+      const found = findDocFile(slot);
+      out[slot] = {
+        present: !!found,
+        ext: found?.ext ?? null,
+        url: `/admin/docs/${slot}`,
+      };
+    }
+    return { docs: out };
+  });
+
   fastify.get('/admin/dashboard', async (_req, reply) => {
     reply.type('text/html; charset=utf-8');
     return DASHBOARD_HTML;
@@ -356,6 +425,17 @@ const DASHBOARD_HTML = /* html */ `<!doctype html>
   .tile .label { color: var(--muted); font-size: 12px; }
   .tile .value { font-size: 22px; font-weight: 600; }
   .tile .sub { color: var(--muted); font-size: 11px; margin-top: 2px; }
+  .doc-tile {
+    background: var(--card-2); border-radius: 8px; padding: 12px 14px;
+    text-decoration: none; color: var(--text); display: block;
+    border: 1px solid transparent; transition: border-color 120ms ease, transform 120ms ease;
+  }
+  .doc-tile:hover { border-color: var(--accent); transform: translateY(-1px); }
+  .doc-tile .label { color: var(--muted); font-size: 12px; }
+  .doc-tile .value { font-size: 20px; font-weight: 600; color: var(--accent); }
+  .doc-tile .sub { color: var(--muted); font-size: 11px; margin-top: 2px; }
+  .doc-tile.missing .value { color: var(--muted); }
+  .doc-tile.missing .sub { color: var(--yellow); }
   .tag { display: inline-block; padding: 1px 7px; border-radius: 999px; font-size: 11px; }
   .tag.up { background: rgba(74,222,128,.15); color: var(--green); }
   .tag.down { background: rgba(248,113,113,.15); color: var(--red); }
@@ -422,6 +502,27 @@ const DASHBOARD_HTML = /* html */ `<!doctype html>
   </nav>
 
   <div id="error"></div>
+
+  <div class="card" id="documents-card">
+    <h2>Documents</h2>
+    <div class="tile-grid">
+      <a class="doc-tile" id="doc-tile-gdd" href="/admin/docs/gdd" target="_blank" rel="noopener">
+        <div class="label">Game Design Document</div>
+        <div class="value">GDD</div>
+        <div class="sub" id="doc-sub-gdd">—</div>
+      </a>
+      <a class="doc-tile" id="doc-tile-business-plan" href="/admin/docs/business-plan" target="_blank" rel="noopener">
+        <div class="label">Business Plan</div>
+        <div class="value">Plan</div>
+        <div class="sub" id="doc-sub-business-plan">—</div>
+      </a>
+      <a class="doc-tile" id="doc-tile-financial-model" href="/admin/docs/financial-model" target="_blank" rel="noopener">
+        <div class="label">Financial Model</div>
+        <div class="value">Model</div>
+        <div class="sub" id="doc-sub-financial-model">—</div>
+      </a>
+    </div>
+  </div>
 
   <section class="pills" id="pills"></section>
 
@@ -1404,10 +1505,35 @@ const DASHBOARD_HTML = /* html */ `<!doctype html>
       el('error').innerHTML = '';
       render(json);
       loadSimulation();
+      loadDocs();
     } catch (err) {
       el('error').innerHTML = \`<div class="err-banner">Failed to load /admin/status: \${esc(err.message)}</div>\`;
     }
     countdown = 30;
+  }
+
+  async function loadDocs() {
+    try {
+      const res = await fetch('/admin/api/docs', { cache: 'no-store' });
+      if (!res.ok) return;
+      const json = await res.json();
+      const slots = ['gdd', 'business-plan', 'financial-model'];
+      for (const slot of slots) {
+        const meta = json.docs && json.docs[slot];
+        const tile = document.getElementById('doc-tile-' + slot);
+        const sub = document.getElementById('doc-sub-' + slot);
+        if (!tile || !sub) continue;
+        if (meta && meta.present) {
+          tile.classList.remove('missing');
+          sub.textContent = '.' + meta.ext + ' · open in new tab';
+        } else {
+          tile.classList.add('missing');
+          sub.textContent = 'missing — drop file at docs/admin/';
+        }
+      }
+    } catch {
+      /* tolerated — tile keeps last-known state */
+    }
   }
 
   function tick() {
