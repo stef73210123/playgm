@@ -113,6 +113,10 @@ interface SubTier {
   daily_pp_boost: number;
   ask_scout_daily_cap: number;
   card_scan_daily_cap: number;
+  /** Per-season trade cap. -1 == unlimited. */
+  trade_cap_per_season?: number;
+  /** Free-form admin notes. */
+  notes?: string;
 }
 interface SubscriptionsFile {
   version: string;
@@ -432,6 +436,21 @@ function validateSubscriptionTier(
           });
         }
       });
+    }
+  }
+  if (body['trade_cap_per_season'] !== undefined) {
+    const v = body['trade_cap_per_season'];
+    if (!isInt(v) || (v as number) < -1) {
+      errs.push({
+        field: 'trade_cap_per_season',
+        message: 'must be integer ≥-1 (-1 = unlimited)',
+      });
+    }
+  }
+  if (body['notes'] !== undefined) {
+    const v = body['notes'];
+    if (typeof v !== 'string' || v.length > 4000) {
+      errs.push({ field: 'notes', message: 'must be string ≤4000 chars' });
     }
   }
   return errs;
@@ -779,8 +798,20 @@ export async function adminEditConfigRoutes(fastify: FastifyInstance): Promise<v
       'Subscription Tiers',
       `<div class="muted" style="margin-bottom:10px;">
         Source: <code>data/economy/pgm_subscriptions.json</code> · auto-commits on save.
-        v2 columns: draft modes, FA pool, slot picker, family.
+        v2 fields: draft modes, FA pool, slot picker, family, trade cap, notes.
+        Use <code>-1</code> for "unlimited" in any numeric cap.
       </div>
+
+      <h2 style="margin:18px 0 8px;font-size:13px;letter-spacing:.4px;color:var(--accent);text-transform:uppercase;">Comparison preview</h2>
+      <div class="card-block" style="overflow-x:auto;">
+        <table id="cmp">
+          <thead></thead>
+          <tbody></tbody>
+        </table>
+        <div class="hint" id="cmpWarn" style="margin-top:6px;color:var(--yellow);"></div>
+      </div>
+
+      <h2 style="margin:18px 0 8px;font-size:13px;letter-spacing:.4px;color:var(--accent);text-transform:uppercase;">Edit tier</h2>
       <div class="card-block" style="overflow-x:auto;">
         <table id="tbl">
           <thead><tr>
@@ -788,7 +819,8 @@ export async function adminEditConfigRoutes(fastify: FastifyInstance): Promise<v
             <th>Drafts/wk</th><th>Cap mode</th><th>Draft modes</th>
             <th>FA pool/wk</th><th>Slot picker</th><th>Family max</th>
             <th>Inv cap</th><th>PP daily</th><th>Scout cap</th><th>Card scan cap</th>
-            <th>Pack alloc (id:n,…)</th><th>Actions</th>
+            <th>Trade cap/season</th>
+            <th>Pack alloc (id:n,…)</th><th>Notes</th><th>Actions</th>
           </tr></thead>
           <tbody></tbody>
         </table>
@@ -1208,41 +1240,60 @@ const SUBSCRIPTIONS_JS = /* javascript */ `
 (() => {
   ${COMMON_JS_PRELUDE}
   const SLOT_OPTS = ['none','random','preferred_slot','exact_slot'];
-  async function load() {
-    const res = await fetch('/admin/api/subscriptions');
-    const j = await res.json();
-    if (!j.ok) return;
-    const tbody = document.querySelector('#tbl tbody');
-    tbody.innerHTML = j.items.map(t => {
-      const allocStr = (t.monthly_pack_allocation || []).map(a => a.pack_id + ':' + a.count).join(',');
-      const dm = t.draft_modes || (t.cap_mode ? ['snake','cap'] : ['snake']);
-      const dmStr = dm.join(',');
-      const slotOpts = SLOT_OPTS.map(o => '<option' + ((t.draft_position_control||'none')===o?' selected':'') + '>'+o+'</option>').join('');
-      return '<tr data-id="' + esc(t.tier_id) + '">' +
-        '<td><code>' + esc(t.tier_id) + '</code></td>' +
-        '<td><input class="name" value="' + esc(t.name) + '" /></td>' +
-        '<td><input class="price" type="number" min="0" step="0.01" value="' + t.monthly_price_usd + '" style="width:80px;" /></td>' +
-        '<td><input class="rpw" type="number" min="0" value="' + t.rosters_per_week + '" style="width:60px;" /></td>' +
-        '<td><input class="dpw" type="number" min="-1" value="' + t.practice_drafts_per_week + '" style="width:60px;" /></td>' +
-        '<td><input class="cap" type="checkbox" ' + (t.cap_mode?'checked':'') + ' /></td>' +
-        '<td><input class="dm" value="' + esc(dmStr) + '" placeholder="snake,cap" style="width:100px;" /></td>' +
-        '<td><input class="fa" type="number" min="0" value="' + (t.fa_pool_size_per_week ?? 0) + '" style="width:60px;" /></td>' +
-        '<td><select class="slot">' + slotOpts + '</select></td>' +
-        '<td><input class="fam" type="number" min="1" value="' + (t.family_max_profiles ?? 1) + '" style="width:60px;" /></td>' +
-        '<td><input class="inv" type="number" min="-1" value="' + t.card_inventory_cap + '" style="width:70px;" /></td>' +
-        '<td><input class="boost" type="number" min="0" value="' + t.daily_pp_boost + '" style="width:70px;" /></td>' +
-        '<td><input class="scout" type="number" min="-1" value="' + t.ask_scout_daily_cap + '" style="width:60px;" /></td>' +
-        '<td><input class="scan" type="number" min="-1" value="' + (t.card_scan_daily_cap ?? -1) + '" style="width:60px;" /></td>' +
-        '<td><input class="alloc" value="' + esc(allocStr) + '" placeholder="pack_id:n,…" /></td>' +
-        '<td><button class="btn primary save">Save</button><div class="hint status"></div></td>' +
-      '</tr>';
-    }).join('');
-    tbody.querySelectorAll('.save').forEach(b => b.addEventListener('click', save));
+
+  /** Snapshot of "spec defaults" (v2.0.0). Used by the Reset button. */
+  const DEFAULTS = {
+    free: {
+      name:'Free', monthly_price_usd:0, rosters_per_week:1, practice_drafts_per_week:1,
+      cap_mode:false, draft_modes:['snake'], fa_pool_size_per_week:10,
+      draft_position_control:'none', family_max_profiles:1, monthly_pack_allocation:[],
+      card_inventory_cap:100, daily_pp_boost:200, ask_scout_daily_cap:2,
+      card_scan_daily_cap:2, trade_cap_per_season:2, notes:''
+    },
+    starter: {
+      name:'Starter', monthly_price_usd:4.99, rosters_per_week:3, practice_drafts_per_week:5,
+      cap_mode:true, draft_modes:['snake','cap'], fa_pool_size_per_week:20,
+      draft_position_control:'random', family_max_profiles:1,
+      monthly_pack_allocation:[{pack_id:'pro_pack',count:1}],
+      card_inventory_cap:200, daily_pp_boost:500, ask_scout_daily_cap:5,
+      card_scan_daily_cap:5, trade_cap_per_season:-1, notes:''
+    },
+    playmaker: {
+      name:'Playmaker', monthly_price_usd:9.99, rosters_per_week:6, practice_drafts_per_week:15,
+      cap_mode:true, draft_modes:['snake','cap'], fa_pool_size_per_week:30,
+      draft_position_control:'preferred_slot', family_max_profiles:1,
+      monthly_pack_allocation:[{pack_id:'pro_pack',count:3}],
+      card_inventory_cap:400, daily_pp_boost:1000, ask_scout_daily_cap:10,
+      card_scan_daily_cap:10, trade_cap_per_season:-1, notes:''
+    },
+    champion: {
+      name:'Champion', monthly_price_usd:19.99, rosters_per_week:12, practice_drafts_per_week:-1,
+      cap_mode:true, draft_modes:['snake','cap'], fa_pool_size_per_week:40,
+      draft_position_control:'exact_slot', family_max_profiles:1,
+      monthly_pack_allocation:[
+        {pack_id:'all_star_pack',count:1},
+        {pack_id:'pro_pack',count:2}
+      ],
+      card_inventory_cap:-1, daily_pp_boost:2000, ask_scout_daily_cap:20,
+      card_scan_daily_cap:20, trade_cap_per_season:-1, notes:''
+    }
+  };
+
+  /** Display "-1" as "unlimited" in the comparison preview. */
+  function fmt(v) {
+    if (v === -1 || v === '-1') return 'unlimited';
+    if (typeof v === 'number') return String(v);
+    return v == null ? '—' : String(v);
   }
-  async function save(ev) {
-    const tr = ev.target.closest('tr');
-    const id = tr.dataset.id;
-    const status = tr.querySelector('.status');
+
+  /** Order Free → Starter → Playmaker → Champion regardless of file order. */
+  const TIER_ORDER = ['free','starter','playmaker','champion'];
+  function sortTiers(items) {
+    return items.slice().sort((a,b) => TIER_ORDER.indexOf(a.tier_id) - TIER_ORDER.indexOf(b.tier_id));
+  }
+
+  /** Read all current values from a row back into a tier object. */
+  function rowToBody(tr) {
     const allocStr = tr.querySelector('.alloc').value.trim();
     const allocation = allocStr === '' ? [] : allocStr.split(',').map(s => {
       const [pid, c] = s.split(':');
@@ -1250,7 +1301,7 @@ const SUBSCRIPTIONS_JS = /* javascript */ `
     });
     const dmStr = tr.querySelector('.dm').value.trim();
     const draft_modes = dmStr === '' ? ['snake'] : dmStr.split(',').map(s => s.trim()).filter(Boolean);
-    const body = {
+    return {
       name: tr.querySelector('.name').value.trim(),
       monthly_price_usd: Number(tr.querySelector('.price').value),
       rosters_per_week: Number(tr.querySelector('.rpw').value),
@@ -1264,11 +1315,157 @@ const SUBSCRIPTIONS_JS = /* javascript */ `
       daily_pp_boost: Number(tr.querySelector('.boost').value),
       ask_scout_daily_cap: Number(tr.querySelector('.scout').value),
       card_scan_daily_cap: Number(tr.querySelector('.scan').value),
+      trade_cap_per_season: Number(tr.querySelector('.trade').value),
       monthly_pack_allocation: allocation,
+      notes: tr.querySelector('.notes').value,
     };
+  }
+
+  /** Render the comparison preview from the live table. */
+  function renderPreview() {
+    const rows = Array.from(document.querySelectorAll('#tbl tbody tr'));
+    const items = rows.map(tr => Object.assign({ tier_id: tr.dataset.id }, rowToBody(tr)));
+    const sorted = sortTiers(items);
+
+    const head = '<tr><th style="text-align:left;">Field</th>' +
+      sorted.map(t => '<th>'+esc(t.name||t.tier_id)+'</th>').join('') + '</tr>';
+    const fields = [
+      ['Tier id', t => '<code>'+esc(t.tier_id)+'</code>'],
+      ['Price / mo', t => '$' + Number(t.monthly_price_usd).toFixed(2)],
+      ['Rosters / week', t => fmt(t.rosters_per_week)],
+      ['Practice drafts / week', t => fmt(t.practice_drafts_per_week)],
+      ['Cap mode', t => t.cap_mode ? '✓' : '—'],
+      ['Draft modes', t => (t.draft_modes||[]).join(', ')],
+      ['FA pool / week', t => fmt(t.fa_pool_size_per_week)],
+      ['Slot picker', t => esc(t.draft_position_control)],
+      ['Family max profiles', t => fmt(t.family_max_profiles)],
+      ['Inventory cap', t => fmt(t.card_inventory_cap)],
+      ['Daily PP boost', t => fmt(t.daily_pp_boost)],
+      ['Ask Scout / day', t => fmt(t.ask_scout_daily_cap)],
+      ['Card Scan / day', t => fmt(t.card_scan_daily_cap)],
+      ['Trade cap / season', t => fmt(t.trade_cap_per_season ?? -1)],
+      ['Monthly pack alloc', t => (t.monthly_pack_allocation||[]).map(p => p.pack_id+':'+p.count).join(', ') || '—'],
+    ];
+    const body = fields.map(([label, getter]) =>
+      '<tr><td style="color:var(--muted);">'+esc(label)+'</td>' +
+      sorted.map(t => '<td>'+getter(t)+'</td>').join('') + '</tr>'
+    ).join('');
+    document.querySelector('#cmp thead').innerHTML = head;
+    document.querySelector('#cmp tbody').innerHTML = body;
+
+    // Free-paid feature warning: if Free has a numeric cap higher than any paid tier's,
+    // call it out. Same for "unlimited free, capped paid".
+    const free = sorted.find(t => t.tier_id === 'free');
+    const warns = [];
+    if (free) {
+      const checkUp = (key, label) => {
+        const fv = Number(free[key]);
+        for (const t of sorted) {
+          if (t.tier_id === 'free') continue;
+          const tv = Number(t[key]);
+          // Treat -1 as Infinity for comparison.
+          const ff = fv === -1 ? Infinity : fv;
+          const tt = tv === -1 ? Infinity : tv;
+          if (ff > tt) warns.push(label+': Free ('+fmt(fv)+') exceeds '+(t.name||t.tier_id)+' ('+fmt(tv)+').');
+        }
+      };
+      checkUp('rosters_per_week','Rosters/week');
+      checkUp('practice_drafts_per_week','Drafts/week');
+      checkUp('fa_pool_size_per_week','FA pool');
+      checkUp('card_inventory_cap','Inventory cap');
+      checkUp('daily_pp_boost','Daily PP');
+      checkUp('ask_scout_daily_cap','Ask Scout');
+      checkUp('card_scan_daily_cap','Card Scan');
+      checkUp('trade_cap_per_season','Trade cap');
+    }
+    document.getElementById('cmpWarn').textContent =
+      warns.length ? '⚠ ' + warns.join(' ') : '';
+  }
+
+  function rowHtml(t) {
+    const allocStr = (t.monthly_pack_allocation || []).map(a => a.pack_id + ':' + a.count).join(',');
+    const dm = t.draft_modes || (t.cap_mode ? ['snake','cap'] : ['snake']);
+    const dmStr = dm.join(',');
+    const slotOpts = SLOT_OPTS.map(o =>
+      '<option' + ((t.draft_position_control||'none')===o?' selected':'') + '>'+o+'</option>'
+    ).join('');
+    const tradeCap = (t.trade_cap_per_season ?? -1);
+    const notes = t.notes ?? '';
+    return '<tr data-id="' + esc(t.tier_id) + '">' +
+      '<td><code>' + esc(t.tier_id) + '</code></td>' +
+      '<td><input class="name" value="' + esc(t.name) + '" /></td>' +
+      '<td><input class="price" type="number" min="0" step="0.01" value="' + t.monthly_price_usd + '" style="width:80px;" /></td>' +
+      '<td><input class="rpw" type="number" min="0" value="' + t.rosters_per_week + '" style="width:60px;" /></td>' +
+      '<td><input class="dpw" type="number" min="-1" value="' + t.practice_drafts_per_week + '" style="width:60px;" title="-1 = unlimited" /></td>' +
+      '<td><input class="cap" type="checkbox" ' + (t.cap_mode?'checked':'') + ' /></td>' +
+      '<td><input class="dm" value="' + esc(dmStr) + '" placeholder="snake,cap" style="width:100px;" /></td>' +
+      '<td><input class="fa" type="number" min="0" value="' + (t.fa_pool_size_per_week ?? 0) + '" style="width:60px;" /></td>' +
+      '<td><select class="slot">' + slotOpts + '</select></td>' +
+      '<td><input class="fam" type="number" min="1" value="' + (t.family_max_profiles ?? 1) + '" style="width:60px;" /></td>' +
+      '<td><input class="inv" type="number" min="-1" value="' + t.card_inventory_cap + '" style="width:70px;" title="-1 = unlimited" /></td>' +
+      '<td><input class="boost" type="number" min="0" value="' + t.daily_pp_boost + '" style="width:70px;" /></td>' +
+      '<td><input class="scout" type="number" min="-1" value="' + t.ask_scout_daily_cap + '" style="width:60px;" title="-1 = unlimited" /></td>' +
+      '<td><input class="scan" type="number" min="-1" value="' + (t.card_scan_daily_cap ?? -1) + '" style="width:60px;" title="-1 = unlimited" /></td>' +
+      '<td><input class="trade" type="number" min="-1" value="' + tradeCap + '" style="width:80px;" title="-1 = unlimited" /></td>' +
+      '<td><input class="alloc" value="' + esc(allocStr) + '" placeholder="pack_id:n,…" /></td>' +
+      '<td><textarea class="notes" rows="2" style="width:200px;font-size:12px;">' + esc(notes) + '</textarea></td>' +
+      '<td>' +
+        '<button class="btn primary save">Save</button> ' +
+        '<button class="btn reset" title="Reset to v2.0.0 default">Reset</button>' +
+        '<div class="hint status"></div>' +
+      '</td>' +
+    '</tr>';
+  }
+
+  async function load() {
+    const res = await fetch('/admin/api/subscriptions');
+    const j = await res.json();
+    if (!j.ok) return;
+    const tbody = document.querySelector('#tbl tbody');
+    tbody.innerHTML = sortTiers(j.items).map(rowHtml).join('');
+    wire();
+    renderPreview();
+  }
+
+  function wire() {
+    const tbody = document.querySelector('#tbl tbody');
+    tbody.querySelectorAll('.save').forEach(b => b.addEventListener('click', save));
+    tbody.querySelectorAll('.reset').forEach(b => b.addEventListener('click', resetRow));
+    // Live preview — recompute whenever any input changes.
+    tbody.querySelectorAll('input,select,textarea').forEach(el =>
+      el.addEventListener('input', renderPreview)
+    );
+  }
+
+  function resetRow(ev) {
+    const tr = ev.target.closest('tr');
+    const id = tr.dataset.id;
+    const def = DEFAULTS[id];
+    if (!def) return;
+    if (!confirm('Reset ' + id + ' to v2.0.0 defaults? Save afterwards to persist.')) return;
+    tr.outerHTML = rowHtml(Object.assign({ tier_id: id }, def));
+    wire();
+    renderPreview();
+  }
+
+  async function save(ev) {
+    const tr = ev.target.closest('tr');
+    const id = tr.dataset.id;
+    const status = tr.querySelector('.status');
+    const body = rowToBody(tr);
+    // Pre-flight: numeric fields must not be < -1; -1 is the sentinel for unlimited.
+    const numericKeys = ['practice_drafts_per_week','card_inventory_cap','ask_scout_daily_cap','card_scan_daily_cap','trade_cap_per_season'];
+    for (const k of numericKeys) {
+      if (Number.isNaN(body[k]) || body[k] < -1) {
+        showStatus(status, false, k + ' must be ≥ -1 (-1 = unlimited)');
+        return;
+      }
+    }
     const r = await saveJson('/admin/api/subscriptions/' + encodeURIComponent(id), body);
     showStatus(status, r.ok, r.ok ? 'saved' : ((r.json.errors||[]).map(e=>e.field+': '+e.message).join(', ') || 'error'));
+    if (r.ok) renderPreview();
   }
+
   load();
 })();
 `;
