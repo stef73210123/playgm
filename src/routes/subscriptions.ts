@@ -19,11 +19,25 @@ const upgradeSchema = z.object({
   tier: z.enum(['starter', 'playmaker', 'champion']),
 });
 
+/**
+ * Legacy entitlement shape for /subscription consumers. Kept for backward
+ * compatibility with the client's `SubscriptionEntitlements` type — new
+ * fields (draft_modes, fa_pool_size_per_week, draft_position_control)
+ * live on the canonical spec at `data/economy/pgm_subscriptions.json`
+ * and should be read via `getSubscription()` server-side.
+ *
+ * v2 (subscription rebalance, May 2026):
+ *   - rosters: 1 (free) / 3 (starter) / 6 (playmaker) / 12 (champion). The
+ *     legacy `rostersPerWeek` field collapses to 2 / 3 to match the historical
+ *     2 | 3 union — clients reading new code should use the spec directly.
+ *   - practice drafts: 1 / 5 / 15 / -1 (unlimited)
+ *   - deepDivesUnlocked: TRUE for every tier — all scouting is free now.
+ */
 const TIER_ENTITLEMENTS = {
-  free:      { rostersPerWeek: 2, practiceDraftsPerWeek: 1,  capModeUnlocked: false, deepDivesUnlocked: false },
-  starter:   { rostersPerWeek: 3, practiceDraftsPerWeek: 5,  capModeUnlocked: true,  deepDivesUnlocked: true  },
-  playmaker: { rostersPerWeek: 3, practiceDraftsPerWeek: 10, capModeUnlocked: true,  deepDivesUnlocked: true  },
-  champion:  { rostersPerWeek: 3, practiceDraftsPerWeek: -1, capModeUnlocked: true,  deepDivesUnlocked: true  },
+  free:      { rostersPerWeek: 2, practiceDraftsPerWeek: 1,  capModeUnlocked: false, deepDivesUnlocked: true },
+  starter:   { rostersPerWeek: 3, practiceDraftsPerWeek: 5,  capModeUnlocked: true,  deepDivesUnlocked: true },
+  playmaker: { rostersPerWeek: 3, practiceDraftsPerWeek: 15, capModeUnlocked: true,  deepDivesUnlocked: true },
+  champion:  { rostersPerWeek: 3, practiceDraftsPerWeek: -1, capModeUnlocked: true,  deepDivesUnlocked: true },
 } as const;
 
 export async function subscriptionRoutes(fastify: FastifyInstance): Promise<void> {
