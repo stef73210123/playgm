@@ -41,6 +41,8 @@ const PROGRESSION_PATH = path.join(PROJECT_ROOT, 'data', 'economy', 'pgm_progres
 // ─── Constants ───────────────────────────────────────────────────────────
 const RARITIES = ['common', 'uncommon', 'rare', 'epic', 'legendary'] as const;
 const SUB_TIERS = ['free', 'starter', 'playmaker', 'champion'] as const;
+const DRAFT_MODES = ['snake', 'cap'] as const;
+const DRAFT_POSITION_CONTROLS = ['none', 'random', 'preferred_slot', 'exact_slot'] as const;
 const SPORTS = ['basketball', 'baseball', 'football', 'hockey', 'soccer'] as const;
 const STACK_RULES = ['highest_only_no_stack', 'stack'] as const;
 const SLUG_RE = /^[a-z][a-z0-9_]*$/;
@@ -102,10 +104,15 @@ interface SubTier {
   rosters_per_week: number;
   practice_drafts_per_week: number;
   cap_mode: boolean;
+  draft_modes: Array<'snake' | 'cap'>;
+  fa_pool_size_per_week: number;
+  draft_position_control: 'none' | 'random' | 'preferred_slot' | 'exact_slot';
+  family_max_profiles: number;
   monthly_pack_allocation: Array<{ pack_id: string; count: number }>;
   card_inventory_cap: number;
   daily_pp_boost: number;
   ask_scout_daily_cap: number;
+  card_scan_daily_cap: number;
 }
 interface SubscriptionsFile {
   version: string;
@@ -329,6 +336,59 @@ function validateSubscriptionTier(
   }
   if (body['cap_mode'] !== undefined && typeof body['cap_mode'] !== 'boolean') {
     errs.push({ field: 'cap_mode', message: 'must be boolean' });
+  }
+  if (body['draft_modes'] !== undefined) {
+    const dm = body['draft_modes'];
+    if (!Array.isArray(dm) || dm.length === 0) {
+      errs.push({ field: 'draft_modes', message: 'must be non-empty array' });
+    } else {
+      const seen = new Set<string>();
+      for (const m of dm) {
+        if (typeof m !== 'string' || !(DRAFT_MODES as readonly string[]).includes(m)) {
+          errs.push({
+            field: 'draft_modes',
+            message: `each entry must be one of ${DRAFT_MODES.join('|')}`,
+          });
+          break;
+        }
+        if (seen.has(m)) {
+          errs.push({ field: 'draft_modes', message: 'entries must be unique' });
+          break;
+        }
+        seen.add(m);
+      }
+      if (!seen.has('snake')) {
+        errs.push({ field: 'draft_modes', message: 'must include "snake"' });
+      }
+    }
+  }
+  if (body['fa_pool_size_per_week'] !== undefined) {
+    const v = body['fa_pool_size_per_week'];
+    if (!isInt(v) || (v as number) < 0) {
+      errs.push({ field: 'fa_pool_size_per_week', message: 'must be integer ≥0' });
+    }
+  }
+  if (body['draft_position_control'] !== undefined) {
+    if (!(DRAFT_POSITION_CONTROLS as readonly string[]).includes(
+      body['draft_position_control'] as string,
+    )) {
+      errs.push({
+        field: 'draft_position_control',
+        message: `must be one of ${DRAFT_POSITION_CONTROLS.join('|')}`,
+      });
+    }
+  }
+  if (body['family_max_profiles'] !== undefined) {
+    const v = body['family_max_profiles'];
+    if (!isInt(v) || (v as number) < 1) {
+      errs.push({ field: 'family_max_profiles', message: 'must be integer ≥1' });
+    }
+  }
+  if (body['card_scan_daily_cap'] !== undefined) {
+    const v = body['card_scan_daily_cap'];
+    if (!isInt(v) || (v as number) < -1) {
+      errs.push({ field: 'card_scan_daily_cap', message: 'must be integer ≥-1' });
+    }
   }
   if (body['card_inventory_cap'] !== undefined) {
     const v = body['card_inventory_cap'];
@@ -719,13 +779,16 @@ export async function adminEditConfigRoutes(fastify: FastifyInstance): Promise<v
       'Subscription Tiers',
       `<div class="muted" style="margin-bottom:10px;">
         Source: <code>data/economy/pgm_subscriptions.json</code> · auto-commits on save.
+        v2 columns: draft modes, FA pool, slot picker, family.
       </div>
-      <div class="card-block">
+      <div class="card-block" style="overflow-x:auto;">
         <table id="tbl">
           <thead><tr>
             <th>Tier</th><th>Name</th><th>$/mo</th><th>Rosters/wk</th>
-            <th>Drafts/wk</th><th>Cap mode</th><th>Inv cap</th>
-            <th>PP boost</th><th>Scout cap</th><th>Pack alloc (id:n,…)</th><th>Actions</th>
+            <th>Drafts/wk</th><th>Cap mode</th><th>Draft modes</th>
+            <th>FA pool/wk</th><th>Slot picker</th><th>Family max</th>
+            <th>Inv cap</th><th>PP daily</th><th>Scout cap</th><th>Card scan cap</th>
+            <th>Pack alloc (id:n,…)</th><th>Actions</th>
           </tr></thead>
           <tbody></tbody>
         </table>
@@ -1144,6 +1207,7 @@ const EARN_RATES_JS = /* javascript */ `
 const SUBSCRIPTIONS_JS = /* javascript */ `
 (() => {
   ${COMMON_JS_PRELUDE}
+  const SLOT_OPTS = ['none','random','preferred_slot','exact_slot'];
   async function load() {
     const res = await fetch('/admin/api/subscriptions');
     const j = await res.json();
@@ -1151,16 +1215,24 @@ const SUBSCRIPTIONS_JS = /* javascript */ `
     const tbody = document.querySelector('#tbl tbody');
     tbody.innerHTML = j.items.map(t => {
       const allocStr = (t.monthly_pack_allocation || []).map(a => a.pack_id + ':' + a.count).join(',');
+      const dm = t.draft_modes || (t.cap_mode ? ['snake','cap'] : ['snake']);
+      const dmStr = dm.join(',');
+      const slotOpts = SLOT_OPTS.map(o => '<option' + ((t.draft_position_control||'none')===o?' selected':'') + '>'+o+'</option>').join('');
       return '<tr data-id="' + esc(t.tier_id) + '">' +
         '<td><code>' + esc(t.tier_id) + '</code></td>' +
         '<td><input class="name" value="' + esc(t.name) + '" /></td>' +
-        '<td><input class="price" type="number" min="0" step="0.01" value="' + t.monthly_price_usd + '" /></td>' +
-        '<td><input class="rpw" type="number" min="0" value="' + t.rosters_per_week + '" /></td>' +
-        '<td><input class="dpw" type="number" min="-1" value="' + t.practice_drafts_per_week + '" /></td>' +
+        '<td><input class="price" type="number" min="0" step="0.01" value="' + t.monthly_price_usd + '" style="width:80px;" /></td>' +
+        '<td><input class="rpw" type="number" min="0" value="' + t.rosters_per_week + '" style="width:60px;" /></td>' +
+        '<td><input class="dpw" type="number" min="-1" value="' + t.practice_drafts_per_week + '" style="width:60px;" /></td>' +
         '<td><input class="cap" type="checkbox" ' + (t.cap_mode?'checked':'') + ' /></td>' +
-        '<td><input class="inv" type="number" min="-1" value="' + t.card_inventory_cap + '" /></td>' +
-        '<td><input class="boost" type="number" min="0" value="' + t.daily_pp_boost + '" /></td>' +
-        '<td><input class="scout" type="number" min="-1" value="' + t.ask_scout_daily_cap + '" /></td>' +
+        '<td><input class="dm" value="' + esc(dmStr) + '" placeholder="snake,cap" style="width:100px;" /></td>' +
+        '<td><input class="fa" type="number" min="0" value="' + (t.fa_pool_size_per_week ?? 0) + '" style="width:60px;" /></td>' +
+        '<td><select class="slot">' + slotOpts + '</select></td>' +
+        '<td><input class="fam" type="number" min="1" value="' + (t.family_max_profiles ?? 1) + '" style="width:60px;" /></td>' +
+        '<td><input class="inv" type="number" min="-1" value="' + t.card_inventory_cap + '" style="width:70px;" /></td>' +
+        '<td><input class="boost" type="number" min="0" value="' + t.daily_pp_boost + '" style="width:70px;" /></td>' +
+        '<td><input class="scout" type="number" min="-1" value="' + t.ask_scout_daily_cap + '" style="width:60px;" /></td>' +
+        '<td><input class="scan" type="number" min="-1" value="' + (t.card_scan_daily_cap ?? -1) + '" style="width:60px;" /></td>' +
         '<td><input class="alloc" value="' + esc(allocStr) + '" placeholder="pack_id:n,…" /></td>' +
         '<td><button class="btn primary save">Save</button><div class="hint status"></div></td>' +
       '</tr>';
@@ -1176,15 +1248,22 @@ const SUBSCRIPTIONS_JS = /* javascript */ `
       const [pid, c] = s.split(':');
       return { pack_id: (pid||'').trim(), count: Number((c||'0').trim()) };
     });
+    const dmStr = tr.querySelector('.dm').value.trim();
+    const draft_modes = dmStr === '' ? ['snake'] : dmStr.split(',').map(s => s.trim()).filter(Boolean);
     const body = {
       name: tr.querySelector('.name').value.trim(),
       monthly_price_usd: Number(tr.querySelector('.price').value),
       rosters_per_week: Number(tr.querySelector('.rpw').value),
       practice_drafts_per_week: Number(tr.querySelector('.dpw').value),
       cap_mode: tr.querySelector('.cap').checked,
+      draft_modes,
+      fa_pool_size_per_week: Number(tr.querySelector('.fa').value),
+      draft_position_control: tr.querySelector('.slot').value,
+      family_max_profiles: Number(tr.querySelector('.fam').value),
       card_inventory_cap: Number(tr.querySelector('.inv').value),
       daily_pp_boost: Number(tr.querySelector('.boost').value),
       ask_scout_daily_cap: Number(tr.querySelector('.scout').value),
+      card_scan_daily_cap: Number(tr.querySelector('.scan').value),
       monthly_pack_allocation: allocation,
     };
     const r = await saveJson('/admin/api/subscriptions/' + encodeURIComponent(id), body);
