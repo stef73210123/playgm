@@ -33,6 +33,12 @@ export interface TradeRulesSpec {
   };
   age_safety: { under_13_friend_list_only: boolean };
   expiry: { proposal_ttl_hours: number };
+  /**
+   * Cooldown (hours) before two users may exchange another trade
+   * proposal after a prior proposal between them. Optional — when
+   * absent or 0, cooldowns are disabled.
+   */
+  cooldown_hours_between_trade_proposals_with_same_user?: number;
 }
 
 export interface TradeSidePlayer {
@@ -72,6 +78,16 @@ function rules(): TradeRulesSpec {
 
 /** Test seam — reset the cached spec. */
 export function _resetTradeRulesForTests(): void {
+  _rules = null;
+}
+
+/**
+ * Drop the in-memory trade-rules cache so the next call re-reads
+ * `data/economy/pgm_trade_rules.json` from disk. Called by the admin
+ * editor's PUT handler so a save flows through to the live engine
+ * without a server restart.
+ */
+export function invalidateTradeRulesCache(): void {
   _rules = null;
 }
 

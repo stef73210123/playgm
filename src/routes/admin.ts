@@ -502,6 +502,7 @@ const DASHBOARD_HTML = /* html */ `<!doctype html>
     <a href="/admin/edit/pity" style="color: var(--accent); text-decoration: none; margin: 0 4px;">Pity</a>·
     <a href="/admin/edit/progression" style="color: var(--accent); text-decoration: none; margin: 0 4px;">Progression</a>·
     <a href="/admin/edit/scoring" style="color: var(--accent); text-decoration: none; margin: 0 4px;">Scoring</a>·
+    <a href="/admin/edit/trade-rules" style="color: var(--accent); text-decoration: none; margin: 0 4px;">Trade rules</a>·
     <a href="/admin/simulate" style="color: var(--accent); text-decoration: none; margin: 0 4px;">Simulate</a>
   </nav>
 
@@ -524,6 +525,22 @@ const DASHBOARD_HTML = /* html */ `<!doctype html>
         <div class="label">Financial Model</div>
         <div class="value">Model</div>
         <div class="sub" id="doc-sub-financial-model">—</div>
+      </a>
+    </div>
+  </div>
+
+  <div class="card" id="editors-card">
+    <h2>Economy Editors</h2>
+    <div class="tile-grid">
+      <a class="doc-tile" id="editor-tile-subscriptions" href="/admin/edit/subscriptions">
+        <div class="label">Subscription Tiers</div>
+        <div class="value">Subscriptions</div>
+        <div class="sub" id="editor-sub-subscriptions">—</div>
+      </a>
+      <a class="doc-tile" id="editor-tile-trade-rules" href="/admin/edit/trade-rules">
+        <div class="label">Trade Engine Rules</div>
+        <div class="value">Trade Rules</div>
+        <div class="sub" id="editor-sub-trade-rules">—</div>
       </a>
     </div>
   </div>
@@ -1515,6 +1532,7 @@ const DASHBOARD_HTML = /* html */ `<!doctype html>
       render(json);
       loadSimulation();
       loadDocs();
+      loadEditorTiles();
     } catch (err) {
       el('error').innerHTML = \`<div class="err-banner">Failed to load /admin/status: \${esc(err.message)}</div>\`;
     }
@@ -1542,6 +1560,43 @@ const DASHBOARD_HTML = /* html */ `<!doctype html>
       }
     } catch {
       /* tolerated — tile keeps last-known state */
+    }
+  }
+
+  async function loadEditorTiles() {
+    // Subscriptions badge: "4 tiers — $0/$4.99/$9.99/$19.99"
+    try {
+      const res = await fetch('/admin/api/subscriptions', { cache: 'no-store' });
+      if (res.ok) {
+        const j = await res.json();
+        const sub = document.getElementById('editor-sub-subscriptions');
+        if (sub && j && j.ok && Array.isArray(j.items)) {
+          const order = ['free','starter','playmaker','champion'];
+          const sorted = j.items.slice().sort((a,b) => order.indexOf(a.tier_id) - order.indexOf(b.tier_id));
+          const prices = sorted.map(t => '$' + Number(t.monthly_price_usd).toFixed(t.monthly_price_usd === 0 ? 0 : 2)).join('/');
+          sub.textContent = sorted.length + ' tiers — ' + prices;
+        }
+      }
+    } catch {
+      /* tolerated */
+    }
+    // Trade rules badge: "Threshold: ±15% • Lock: 24h"
+    try {
+      const res = await fetch('/admin/api/trade-rules', { cache: 'no-store' });
+      if (res.ok) {
+        const j = await res.json();
+        const sub = document.getElementById('editor-sub-trade-rules');
+        if (sub && j && j.ok && j.doc) {
+          const f = j.doc.fairness || {};
+          const e = j.doc.execution || {};
+          const parts = [];
+          if (f.max_imbalance_pct != null) parts.push('Threshold: ±' + f.max_imbalance_pct + '%');
+          if (e.lock_duration_hours != null) parts.push('Lock: ' + e.lock_duration_hours + 'h');
+          sub.textContent = parts.join(' • ') || 'edit rules';
+        }
+      }
+    } catch {
+      /* tolerated */
     }
   }
 

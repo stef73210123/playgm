@@ -27,6 +27,8 @@ import {
   notFound,
   type ValidationError,
 } from './adminEdit.js';
+import { invalidateTradeRulesCache } from '../services/trade/tradeFairness.js';
+import { invalidateConfigCache } from './runtimeConfig.js';
 
 // ─── File paths ──────────────────────────────────────────────────────────
 const PACKS_PATH = path.join(PROJECT_ROOT, 'data', 'cards', 'pgm_packs.json');
@@ -37,6 +39,7 @@ const TRIGGERS_PATH = path.join(PROJECT_ROOT, 'data', 'cards', 'pgm_triggers.jso
 const STAT_RESOLUTION_PATH = path.join(PROJECT_ROOT, 'data', 'cards', 'pgm_stat_resolution.json');
 const PITY_PATH = path.join(PROJECT_ROOT, 'data', 'cards', 'pgm_pity_timers.json');
 const PROGRESSION_PATH = path.join(PROJECT_ROOT, 'data', 'economy', 'pgm_progression.json');
+const TRADE_RULES_PATH = path.join(PROJECT_ROOT, 'data', 'economy', 'pgm_trade_rules.json');
 
 // ─── Constants ───────────────────────────────────────────────────────────
 const RARITIES = ['common', 'uncommon', 'rare', 'epic', 'legendary'] as const;
@@ -183,6 +186,26 @@ interface ProgressionFile {
   tiers: ProgressionTier[];
   tier_up_bonus_pp: number;
   contest_gating: Record<string, number>;
+}
+interface TradeRulesFile {
+  version: string;
+  fairness: {
+    max_imbalance_pct: number;
+    grade_score: Record<string, number>;
+    pp_per_grade_point: number;
+    max_pp_per_side: number;
+    min_players_per_side: number;
+    max_players_per_side: number;
+  };
+  execution: { lock_duration_hours: number };
+  caps: {
+    by_tier: Record<string, { trades_per_season: number } & Record<string, unknown>>;
+  };
+  age_safety: { under_13_friend_list_only: boolean };
+  expiry: { proposal_ttl_hours: number };
+  cooldown_hours_between_trade_proposals_with_same_user?: number;
+  // Allow loose `_doc` fields and similar comments to flow through.
+  [extra: string]: unknown;
 }
 
 // ─── Validators ──────────────────────────────────────────────────────────
@@ -642,6 +665,145 @@ function validateProgression(body: Record<string, unknown>): ValidationError[] {
       errs.push({ field: 'tier_up_bonus_pp', message: 'must be non-negative integer' });
     }
   }
+  return errs;
+}
+
+function validateTradeRules(body: Record<string, unknown>): ValidationError[] {
+  const errs: ValidationError[] = [];
+
+  // fairness section
+  const f = body['fairness'] as Record<string, unknown> | undefined;
+  if (f !== undefined) {
+    if (!f || typeof f !== 'object' || Array.isArray(f)) {
+      errs.push({ field: 'fairness', message: 'must be object' });
+    } else {
+      if (f['max_imbalance_pct'] !== undefined) {
+        const v = f['max_imbalance_pct'];
+        if (!isNum(v) || (v as number) < 0 || (v as number) > 100) {
+          errs.push({ field: 'fairness.max_imbalance_pct', message: 'must be number 0..100' });
+        }
+      }
+      if (f['pp_per_grade_point'] !== undefined) {
+        const v = f['pp_per_grade_point'];
+        if (!isNum(v) || (v as number) <= 0) {
+          errs.push({ field: 'fairness.pp_per_grade_point', message: 'must be number >0' });
+        }
+      }
+      if (f['max_pp_per_side'] !== undefined) {
+        const v = f['max_pp_per_side'];
+        if (!isInt(v) || (v as number) < 0) {
+          errs.push({ field: 'fairness.max_pp_per_side', message: 'must be integer ≥0' });
+        }
+      }
+      if (f['min_players_per_side'] !== undefined) {
+        const v = f['min_players_per_side'];
+        if (!isInt(v) || (v as number) < 1) {
+          errs.push({ field: 'fairness.min_players_per_side', message: 'must be integer ≥1' });
+        }
+      }
+      if (f['max_players_per_side'] !== undefined) {
+        const v = f['max_players_per_side'];
+        if (!isInt(v) || (v as number) < 1 || (v as number) > 10) {
+          errs.push({ field: 'fairness.max_players_per_side', message: 'must be integer 1..10' });
+        }
+      }
+      // min must not exceed max if both present.
+      const mn = isInt(f['min_players_per_side']) ? (f['min_players_per_side'] as number) : null;
+      const mx = isInt(f['max_players_per_side']) ? (f['max_players_per_side'] as number) : null;
+      if (mn != null && mx != null && mn > mx) {
+        errs.push({
+          field: 'fairness.max_players_per_side',
+          message: 'must be ≥ min_players_per_side',
+        });
+      }
+    }
+  }
+
+  // execution
+  const e = body['execution'] as Record<string, unknown> | undefined;
+  if (e !== undefined) {
+    if (!e || typeof e !== 'object' || Array.isArray(e)) {
+      errs.push({ field: 'execution', message: 'must be object' });
+    } else if (e['lock_duration_hours'] !== undefined) {
+      const v = e['lock_duration_hours'];
+      if (!isInt(v) || (v as number) < 0) {
+        errs.push({ field: 'execution.lock_duration_hours', message: 'must be integer ≥0' });
+      }
+    }
+  }
+
+  // caps.by_tier — accept any tier key, all values must have integer ≥-1.
+  const c = body['caps'] as Record<string, unknown> | undefined;
+  if (c !== undefined) {
+    if (!c || typeof c !== 'object' || Array.isArray(c)) {
+      errs.push({ field: 'caps', message: 'must be object' });
+    } else {
+      const bt = c['by_tier'] as Record<string, unknown> | undefined;
+      if (bt !== undefined) {
+        if (!bt || typeof bt !== 'object' || Array.isArray(bt)) {
+          errs.push({ field: 'caps.by_tier', message: 'must be object' });
+        } else {
+          for (const [tier, entry] of Object.entries(bt)) {
+            if (!entry || typeof entry !== 'object') {
+              errs.push({ field: `caps.by_tier.${tier}`, message: 'must be object' });
+              continue;
+            }
+            const er = entry as Record<string, unknown>;
+            if (er['trades_per_season'] !== undefined) {
+              const v = er['trades_per_season'];
+              if (!isInt(v) || (v as number) < -1) {
+                errs.push({
+                  field: `caps.by_tier.${tier}.trades_per_season`,
+                  message: 'must be integer ≥-1 (-1 = unlimited)',
+                });
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  // age_safety
+  const a = body['age_safety'] as Record<string, unknown> | undefined;
+  if (a !== undefined) {
+    if (!a || typeof a !== 'object' || Array.isArray(a)) {
+      errs.push({ field: 'age_safety', message: 'must be object' });
+    } else if (
+      a['under_13_friend_list_only'] !== undefined &&
+      typeof a['under_13_friend_list_only'] !== 'boolean'
+    ) {
+      errs.push({
+        field: 'age_safety.under_13_friend_list_only',
+        message: 'must be boolean',
+      });
+    }
+  }
+
+  // expiry
+  const x = body['expiry'] as Record<string, unknown> | undefined;
+  if (x !== undefined) {
+    if (!x || typeof x !== 'object' || Array.isArray(x)) {
+      errs.push({ field: 'expiry', message: 'must be object' });
+    } else if (x['proposal_ttl_hours'] !== undefined) {
+      const v = x['proposal_ttl_hours'];
+      if (!isInt(v) || (v as number) < 0) {
+        errs.push({ field: 'expiry.proposal_ttl_hours', message: 'must be integer ≥0' });
+      }
+    }
+  }
+
+  // cooldown
+  if (body['cooldown_hours_between_trade_proposals_with_same_user'] !== undefined) {
+    const v = body['cooldown_hours_between_trade_proposals_with_same_user'];
+    if (!isInt(v) || (v as number) < 0) {
+      errs.push({
+        field: 'cooldown_hours_between_trade_proposals_with_same_user',
+        message: 'must be integer ≥0',
+      });
+    }
+  }
+
   return errs;
 }
 
@@ -1139,6 +1301,203 @@ export async function adminEditConfigRoutes(fastify: FastifyInstance): Promise<v
     );
     return { ok: true, doc: merged, commit };
   });
+
+  // ═══ TRADE RULES ═════════════════════════════════════════════════════════
+  fastify.get('/admin/edit/trade-rules', async (_req, reply) => {
+    reply.type('text/html; charset=utf-8');
+    return pageHtml(
+      'Trade rules',
+      'Trade Rules',
+      `<div class="muted" style="margin-bottom:10px;">
+        Source: <code>data/economy/pgm_trade_rules.json</code> · auto-commits on save.
+        Runtime cache + <code>/api/config/v1</code> are invalidated on save so changes
+        flow to the live trade engine without a restart.
+      </div>
+
+      <h2 style="margin:18px 0 8px;font-size:13px;letter-spacing:.4px;color:var(--accent);text-transform:uppercase;">Test a trade</h2>
+      <div class="card-block">
+        <div class="muted" style="margin-bottom:8px;font-size:12px;">
+          Enter the grade-summed score of each side (use the grade ladder
+          A+=13, A=12, A-=11, B+=10, … F=1) plus an optional PP sweetener.
+          The verdict and imbalance % are computed against the current
+          <code>fairness</code> values below — edit those values and the
+          calculator will recompute live.
+        </div>
+        <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:12px;">
+          <div>
+            <label class="muted">Side A grade total</label><br/>
+            <input id="calc_a_grades" type="number" step="0.1" value="12" style="width:90px;" />
+            <label class="muted" style="margin-left:10px;">Side A PP sweetener</label>
+            <input id="calc_a_pp" type="number" min="0" value="0" style="width:90px;" />
+          </div>
+          <div>
+            <label class="muted">Side B grade total</label><br/>
+            <input id="calc_b_grades" type="number" step="0.1" value="11" style="width:90px;" />
+            <label class="muted" style="margin-left:10px;">Side B PP sweetener</label>
+            <input id="calc_b_pp" type="number" min="0" value="0" style="width:90px;" />
+          </div>
+        </div>
+        <div id="calc_out" style="margin-top:10px;font-size:13px;"></div>
+      </div>
+
+      <h2 style="margin:18px 0 8px;font-size:13px;letter-spacing:.4px;color:var(--accent);text-transform:uppercase;">Fairness</h2>
+      <div class="card-block">
+        <table style="width:auto;">
+          <tr><td><label class="muted">Imbalance threshold (%)</label></td>
+            <td><input id="f_max_imbalance_pct" type="number" min="0" max="100" step="0.1" style="width:90px;" /></td>
+            <td class="muted" style="font-size:11px;">Max <code>(|a-b|/max(a,b))</code> before auto-reject. 15 = ±15%.</td></tr>
+          <tr><td><label class="muted">PP per grade point</label></td>
+            <td><input id="f_pp_per_grade_point" type="number" min="1" style="width:90px;" /></td>
+            <td class="muted" style="font-size:11px;">200 PP = 1.0 grade pts (so 100 PP = 0.5).</td></tr>
+          <tr><td><label class="muted">Max PP sweetener / side</label></td>
+            <td><input id="f_max_pp_per_side" type="number" min="0" style="width:90px;" /></td>
+            <td class="muted" style="font-size:11px;">Hard ceiling. Excess PP is clamped server-side.</td></tr>
+          <tr><td><label class="muted">Min players / side</label></td>
+            <td><input id="f_min_players" type="number" min="1" style="width:90px;" /></td>
+            <td class="muted" style="font-size:11px;">Each side must include at least this many players.</td></tr>
+          <tr><td><label class="muted">Max players / side</label></td>
+            <td><input id="f_max_players" type="number" min="1" max="10" style="width:90px;" /></td>
+            <td class="muted" style="font-size:11px;">Spec default: 3.</td></tr>
+        </table>
+      </div>
+
+      <h2 style="margin:18px 0 8px;font-size:13px;letter-spacing:.4px;color:var(--accent);text-transform:uppercase;">Execution &amp; expiry</h2>
+      <div class="card-block">
+        <table style="width:auto;">
+          <tr><td><label class="muted">Post-trade lock (hours)</label></td>
+            <td><input id="e_lock_hours" type="number" min="0" style="width:90px;" /></td>
+            <td class="muted" style="font-size:11px;">Both rosters lock outbound trades for this duration.</td></tr>
+          <tr><td><label class="muted">Proposal TTL (hours)</label></td>
+            <td><input id="e_ttl_hours" type="number" min="0" style="width:90px;" /></td>
+            <td class="muted" style="font-size:11px;">Pending proposals auto-expire after this many hours.</td></tr>
+          <tr><td><label class="muted">Same-pair cooldown (hours)</label></td>
+            <td><input id="e_cooldown" type="number" min="0" style="width:90px;" /></td>
+            <td class="muted" style="font-size:11px;">Wait between proposals to the same user. 0 disables.</td></tr>
+        </table>
+      </div>
+
+      <h2 style="margin:18px 0 8px;font-size:13px;letter-spacing:.4px;color:var(--accent);text-transform:uppercase;">Per-tier trade caps</h2>
+      <div class="card-block">
+        <table style="width:auto;">
+          <thead><tr><th>Tier</th><th>Trades / season</th><th></th></tr></thead>
+          <tbody id="capsBody"></tbody>
+        </table>
+        <div class="muted" style="font-size:11px;margin-top:6px;">Use <code>-1</code> for "unlimited".</div>
+      </div>
+
+      <h2 style="margin:18px 0 8px;font-size:13px;letter-spacing:.4px;color:var(--accent);text-transform:uppercase;">Age safety</h2>
+      <div class="card-block">
+        <label><input id="a_under13" type="checkbox" />
+          Restrict under-13 users to friend-list trades only (COPPA)</label>
+      </div>
+
+      <div class="card-block" style="margin-top:14px;display:flex;gap:10px;align-items:center;">
+        <button class="btn primary" id="save">Save</button>
+        <button class="btn" id="diff">Show diff vs. current</button>
+        <span class="hint" id="status"></span>
+      </div>
+      <pre id="diffOut" class="muted" style="margin-top:8px;font-size:12px;display:none;"></pre>`,
+      TRADE_RULES_JS,
+    );
+  });
+
+  fastify.get('/admin/api/trade-rules', async (_req, reply) => {
+    try {
+      const file = await readJson<TradeRulesFile>(TRADE_RULES_PATH);
+      return { ok: true, doc: file };
+    } catch (err) {
+      reply.code(500).send({ ok: false, error: err instanceof Error ? err.message : 'load failed' });
+      return reply;
+    }
+  });
+
+  /**
+   * PUT /admin/api/trade-rules
+   *
+   * Body: a partial trade-rules patch ({ fairness?, execution?, caps?, …}).
+   * We merge the patch into the on-disk file (preserving `_doc` comment
+   * fields and the grade_score ladder), validate, and write. On success
+   * we invalidate both the trade-rules in-memory cache and the runtime
+   * config cache so changes flow live without a restart.
+   */
+  const writeTradeRules = async (
+    req: { body?: unknown },
+    reply: FastifyReply,
+  ): Promise<unknown> => {
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const errs = validateTradeRules(body);
+    if (errs.length) return badRequest(reply, errs);
+    const file = await readJson<TradeRulesFile>(TRADE_RULES_PATH);
+    const merged: TradeRulesFile = {
+      ...file,
+      ...(body['fairness']
+        ? {
+            fairness: {
+              ...file.fairness,
+              ...(body['fairness'] as Record<string, unknown>),
+              // Always preserve the grade_score ladder — never editable here.
+              grade_score: file.fairness.grade_score,
+            },
+          }
+        : {}),
+      ...(body['execution']
+        ? {
+            execution: {
+              ...file.execution,
+              ...(body['execution'] as Record<string, unknown>),
+            },
+          }
+        : {}),
+      ...(body['caps']
+        ? {
+            caps: {
+              ...file.caps,
+              by_tier: {
+                ...file.caps.by_tier,
+                ...((body['caps'] as Record<string, unknown>)['by_tier'] as Record<
+                  string,
+                  { trades_per_season: number }
+                >),
+              },
+            },
+          }
+        : {}),
+      ...(body['age_safety']
+        ? {
+            age_safety: {
+              ...file.age_safety,
+              ...(body['age_safety'] as Record<string, unknown>),
+            },
+          }
+        : {}),
+      ...(body['expiry']
+        ? {
+            expiry: {
+              ...file.expiry,
+              ...(body['expiry'] as Record<string, unknown>),
+            },
+          }
+        : {}),
+      ...(body['cooldown_hours_between_trade_proposals_with_same_user'] !== undefined
+        ? {
+            cooldown_hours_between_trade_proposals_with_same_user: body[
+              'cooldown_hours_between_trade_proposals_with_same_user'
+            ] as number,
+          }
+        : {}),
+    };
+    await writeJson(TRADE_RULES_PATH, merged);
+    invalidateTradeRulesCache();
+    invalidateConfigCache();
+    const commit = autoCommit(
+      relFromRoot(TRADE_RULES_PATH),
+      'chore(content): update trade rules',
+    );
+    return { ok: true, doc: merged, commit };
+  };
+  fastify.put('/admin/api/trade-rules', writeTradeRules);
+  // Accept PATCH too — admin writers in this file use PATCH semantics elsewhere.
+  fastify.patch('/admin/api/trade-rules', writeTradeRules);
 }
 
 // ─── Inline editor JS modules ────────────────────────────────────────────
@@ -1663,6 +2022,174 @@ const PROGRESSION_JS = /* javascript */ `
     const r = await saveJson('/admin/api/progression', body);
     showStatus(status, r.ok, r.ok ? 'saved' : ((r.json.errors||[]).map(e=>e.field+': '+e.message).join(', ') || 'error'));
   });
+  load();
+})();
+`;
+
+const TRADE_RULES_JS = /* javascript */ `
+(() => {
+  ${COMMON_JS_PRELUDE}
+
+  let original = null; // doc loaded from server, used by the diff button.
+
+  /** Build the current form state into the same shape the PATCH endpoint expects. */
+  function readForm() {
+    const caps = {};
+    document.querySelectorAll('#capsBody tr[data-tier]').forEach(tr => {
+      const tier = tr.dataset.tier;
+      const v = Number(tr.querySelector('.cap').value);
+      caps[tier] = { trades_per_season: v };
+    });
+    return {
+      fairness: {
+        max_imbalance_pct: Number(document.getElementById('f_max_imbalance_pct').value),
+        pp_per_grade_point: Number(document.getElementById('f_pp_per_grade_point').value),
+        max_pp_per_side: Number(document.getElementById('f_max_pp_per_side').value),
+        min_players_per_side: Number(document.getElementById('f_min_players').value),
+        max_players_per_side: Number(document.getElementById('f_max_players').value),
+      },
+      execution: {
+        lock_duration_hours: Number(document.getElementById('e_lock_hours').value),
+      },
+      expiry: {
+        proposal_ttl_hours: Number(document.getElementById('e_ttl_hours').value),
+      },
+      cooldown_hours_between_trade_proposals_with_same_user:
+        Number(document.getElementById('e_cooldown').value),
+      caps: { by_tier: caps },
+      age_safety: {
+        under_13_friend_list_only: document.getElementById('a_under13').checked,
+      },
+    };
+  }
+
+  /** Run the same fairness math the server runs, against the live form values. */
+  function recompute() {
+    const f = readForm().fairness;
+    const aGrades = Number(document.getElementById('calc_a_grades').value) || 0;
+    const aPpRaw = Math.max(0, Number(document.getElementById('calc_a_pp').value) || 0);
+    const bGrades = Number(document.getElementById('calc_b_grades').value) || 0;
+    const bPpRaw = Math.max(0, Number(document.getElementById('calc_b_pp').value) || 0);
+    const aPp = Math.min(aPpRaw, f.max_pp_per_side);
+    const bPp = Math.min(bPpRaw, f.max_pp_per_side);
+    const aScore = aGrades + (f.pp_per_grade_point > 0 ? aPp / f.pp_per_grade_point : 0);
+    const bScore = bGrades + (f.pp_per_grade_point > 0 ? bPp / f.pp_per_grade_point : 0);
+    const denom = Math.max(aScore, bScore);
+    const imbalance = denom > 0 ? Math.abs(aScore - bScore) / denom : 0;
+    const threshold = (f.max_imbalance_pct || 0) / 100;
+    let verdict, color;
+    if (imbalance <= threshold * 0.5) { verdict = 'fair'; color = 'var(--green,#4ade80)'; }
+    else if (imbalance <= threshold)  { verdict = 'slightly off'; color = 'var(--yellow,#facc15)'; }
+    else                              { verdict = 'lopsided'; color = 'var(--red,#f87171)'; }
+    const pct = (imbalance * 100).toFixed(1);
+    const out = document.getElementById('calc_out');
+    out.innerHTML =
+      '<span style="display:inline-block;padding:2px 10px;border-radius:999px;background:rgba(255,255,255,0.06);color:'+color+';font-weight:600;">'+
+        esc(verdict.toUpperCase())+
+      '</span>' +
+      ' &nbsp; imbalance <code>'+pct+'%</code>' +
+      ' &nbsp; threshold <code>±'+(threshold*100).toFixed(1)+'%</code>' +
+      ' &nbsp; <span class="muted">Side A score: '+aScore.toFixed(2)+' &nbsp; Side B score: '+bScore.toFixed(2)+'</span>' +
+      (aPpRaw > f.max_pp_per_side ? '<div style="color:'+color+';font-size:12px;">⚠ Side A PP capped at '+f.max_pp_per_side+'</div>' : '') +
+      (bPpRaw > f.max_pp_per_side ? '<div style="color:'+color+';font-size:12px;">⚠ Side B PP capped at '+f.max_pp_per_side+'</div>' : '');
+  }
+
+  function fillForm(doc) {
+    const f = doc.fairness || {};
+    const e = doc.execution || {};
+    const x = doc.expiry || {};
+    const a = doc.age_safety || {};
+    document.getElementById('f_max_imbalance_pct').value = f.max_imbalance_pct ?? 15;
+    document.getElementById('f_pp_per_grade_point').value = f.pp_per_grade_point ?? 200;
+    document.getElementById('f_max_pp_per_side').value = f.max_pp_per_side ?? 2000;
+    document.getElementById('f_min_players').value = f.min_players_per_side ?? 1;
+    document.getElementById('f_max_players').value = f.max_players_per_side ?? 3;
+    document.getElementById('e_lock_hours').value = e.lock_duration_hours ?? 24;
+    document.getElementById('e_ttl_hours').value = x.proposal_ttl_hours ?? 72;
+    document.getElementById('e_cooldown').value =
+      doc.cooldown_hours_between_trade_proposals_with_same_user ?? 6;
+    document.getElementById('a_under13').checked = !!a.under_13_friend_list_only;
+    const tiers = (doc.caps && doc.caps.by_tier) || {};
+    const order = ['free','starter','playmaker','champion'];
+    const tbody = document.getElementById('capsBody');
+    tbody.innerHTML = order
+      .filter(t => tiers[t])
+      .map(t => '<tr data-tier="'+esc(t)+'">' +
+        '<td><code>'+esc(t)+'</code></td>' +
+        '<td><input class="cap" type="number" min="-1" value="'+(tiers[t].trades_per_season ?? -1)+'" style="width:90px;" title="-1 = unlimited" /></td>' +
+        '<td class="muted" style="font-size:11px;">'+(Number(tiers[t].trades_per_season)===-1?'unlimited':'capped')+'</td>' +
+      '</tr>').join('');
+  }
+
+  async function load() {
+    const res = await fetch('/admin/api/trade-rules');
+    const j = await res.json();
+    if (!j.ok) return;
+    original = j.doc;
+    fillForm(j.doc);
+    wireLive();
+    recompute();
+  }
+
+  function wireLive() {
+    document.querySelectorAll('input,select').forEach(el =>
+      el.addEventListener('input', recompute)
+    );
+  }
+
+  document.getElementById('save').addEventListener('click', async () => {
+    const body = readForm();
+    const status = document.getElementById('status');
+    if (Number(body.fairness.min_players_per_side) > Number(body.fairness.max_players_per_side)) {
+      return showStatus(status, false, 'min players must be ≤ max players');
+    }
+    const res = await fetch('/admin/api/trade-rules', {
+      method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)
+    });
+    const j = await res.json();
+    if (res.ok && j.ok) {
+      original = j.doc;
+      showStatus(status, true, 'saved');
+    } else {
+      showStatus(status, false, ((j.errors||[]).map(e=>e.field+': '+e.message).join(', ')) || j.error || 'error');
+    }
+  });
+
+  document.getElementById('diff').addEventListener('click', () => {
+    const out = document.getElementById('diffOut');
+    if (!original) return;
+    const cur = readForm();
+    const lines = [];
+    const flatOrig = flatten(original);
+    const flatCur = flatten(cur);
+    const allKeys = new Set([...Object.keys(flatOrig), ...Object.keys(flatCur)]);
+    const changedKeys = [...allKeys].filter(k => String(flatOrig[k]) !== String(flatCur[k])).sort();
+    if (changedKeys.length === 0) {
+      lines.push('(no changes)');
+    } else {
+      changedKeys.forEach(k => {
+        lines.push(k + ': ' + JSON.stringify(flatOrig[k]) + ' → ' + JSON.stringify(flatCur[k]));
+      });
+    }
+    out.style.display = 'block';
+    out.textContent = lines.join('\\n');
+  });
+
+  function flatten(obj, prefix) {
+    prefix = prefix || '';
+    const out = {};
+    for (const [k, v] of Object.entries(obj || {})) {
+      if (k.startsWith('_')) continue; // skip _doc fields
+      const key = prefix ? (prefix + '.' + k) : k;
+      if (v && typeof v === 'object' && !Array.isArray(v)) {
+        Object.assign(out, flatten(v, key));
+      } else {
+        out[key] = v;
+      }
+    }
+    return out;
+  }
+
   load();
 })();
 `;
