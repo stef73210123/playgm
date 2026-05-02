@@ -118,6 +118,21 @@ export interface AskScoutMetrics {
   cost_per_paid_seat_24h_usd: CountResult;
 }
 
+export interface CardScanMetrics {
+  /** All Card Scan vision calls in the last 24h. */
+  scans_24h: CountResult;
+  /** 24h scans bucketed by subscription tier. */
+  scans_24h_by_tier: DistributionResult;
+  /** % of 24h scans that hit the per-tier daily cap, by tier. */
+  cap_hit_rate_24h_by_tier: DistributionResult;
+  /** Free-tier users who hit their cap today. Conversion-funnel KPI. */
+  free_users_capped_today: CountResult;
+  /** Estimated 24h Anthropic vision spend. */
+  estimated_anthropic_spend_24h_usd: CountResult;
+  /** Vision spend / paid seats. */
+  cost_per_paid_seat_24h_usd: CountResult;
+}
+
 export interface EconomicMetricsReport {
   pp: PpMetrics;
   packs: PackMetrics;
@@ -127,6 +142,7 @@ export interface EconomicMetricsReport {
   trivia_picks: TriviaPicksMetrics;
   retention: RetentionMetrics;
   ask_scout: AskScoutMetrics;
+  card_scan: CardScanMetrics;
 }
 
 interface Cache<T> { value: T; expires_at: number }
@@ -708,6 +724,42 @@ function loadAskScoutCapByTier(): Record<string, number> {
   }
 }
 
+function loadCardScanCapByTier(): Record<string, number> {
+  try {
+    const raw = JSON.parse(
+      readFileSync(path.join(PROJECT_ROOT, 'data', 'economy', 'pgm_subscriptions.json'), 'utf8'),
+    ) as { tiers: Array<{ tier_id: string; card_scan_daily_cap?: number }> };
+    const out: Record<string, number> = {};
+    for (const t of raw.tiers ?? []) {
+      out[t.tier_id] = typeof t.card_scan_daily_cap === 'number' ? t.card_scan_daily_cap : 0;
+    }
+    return out;
+  } catch {
+    return { free: 2, starter: 5, playmaker: 10, champion: 20 };
+  }
+}
+
+// Haiku 4.5 vision pricing (per https://www.anthropic.com/pricing as of 2026):
+//   input  $0.0008 per 1K tokens
+//   output $0.004  per 1K tokens
+//   image  ~$0.0024 per megapixel (rough — varies with model)
+// Typical Card Scan exchange (rough fixture from production traces):
+//   ~700 input tokens (system prompt + JSON schema instructions)
+//   ~250 output tokens (extraction JSON)
+//   ~1.0 MP per scan (camera roll defaults; most cards crop to ~0.5–1.5 MP)
+// Per-call cost ≈ (700/1000)*0.0008 + (250/1000)*0.004 + 1.0*0.0024
+//               ≈ 0.00056 + 0.00100 + 0.00240 = $0.00396
+// So roughly $0.003–0.005 per scan. Constants are baked in for v1 — no
+// runtime fetch, no per-call telemetry yet.
+const CARD_SCAN_AVG_INPUT_TOKENS = 700;
+const CARD_SCAN_AVG_OUTPUT_TOKENS = 250;
+const CARD_SCAN_AVG_IMAGE_MP = 1.0;
+const HAIKU_IMAGE_USD_PER_MP = 0.0024;
+const CARD_SCAN_COST_PER_CALL_USD =
+  (CARD_SCAN_AVG_INPUT_TOKENS / 1000) * HAIKU_INPUT_USD_PER_1K +
+  (CARD_SCAN_AVG_OUTPUT_TOKENS / 1000) * HAIKU_OUTPUT_USD_PER_1K +
+  CARD_SCAN_AVG_IMAGE_MP * HAIKU_IMAGE_USD_PER_MP;
+
 async function buildAskScoutMetrics(
   paidUserCount: number | null,
 ): Promise<AskScoutMetrics> {
@@ -818,6 +870,110 @@ async function buildAskScoutMetrics(
   };
 }
 
+async function buildCardScanMetrics(
+  paidUserCount: number | null,
+): Promise<CardScanMetrics> {
+  const caps = loadCardScanCapByTier();
+  const since24h = isoSinceHours(24);
+  const todayYmd = new Date().toISOString().slice(0, 10);
+
+  // Pull (user_id, count) rows once, bucket client-side. Same shape as
+  // ask_scout_usage; the schema is intentionally identical.
+  const usageRes = await (async () => {
+    try {
+      const { data, error } = await supabase
+        .from('card_scan_usage')
+        .select('user_id, count, last_request_at, ymd')
+        .gte('last_request_at', since24h);
+      if (error) {
+        const missing = isMissingTableError(error.message);
+        return { rows: null as null, error: error.message, unmeasured: missing };
+      }
+      return { rows: (data ?? []) as Array<{ user_id: string; count: number; ymd: string }> };
+    } catch (err) {
+      return {
+        rows: null as null,
+        error: err instanceof Error ? err.message : String(err),
+        unmeasured: true,
+      };
+    }
+  })();
+
+  if (!usageRes.rows) {
+    const note = usageRes.error ?? 'card_scan_usage unmeasured';
+    return {
+      scans_24h: unmeasured(note),
+      scans_24h_by_tier: unmeasuredDist(note),
+      cap_hit_rate_24h_by_tier: unmeasuredDist(note),
+      free_users_capped_today: unmeasured(note),
+      estimated_anthropic_spend_24h_usd: unmeasured(note),
+      cost_per_paid_seat_24h_usd: unmeasured(note),
+    };
+  }
+
+  // Tier lookup (best-effort).
+  const userIds = Array.from(new Set(usageRes.rows.map((r) => r.user_id))).filter(Boolean);
+  const tierByUser = new Map<string, string>();
+  if (userIds.length > 0) {
+    try {
+      const { data, error } = await supabase
+        .from('profiles')
+        .select('id, subscription_tier')
+        .in('id', userIds);
+      if (!error && data) {
+        for (const row of data as Array<{ id: string; subscription_tier: string }>) {
+          tierByUser.set(row.id, row.subscription_tier ?? 'free');
+        }
+      }
+    } catch {
+      // Best-effort — fall back to 'free' below.
+    }
+  }
+
+  const scansByTier: Record<string, number> = { free: 0, starter: 0, playmaker: 0, champion: 0 };
+  const cappedByTier: Record<string, number> = { free: 0, starter: 0, playmaker: 0, champion: 0 };
+  const totalsByTier: Record<string, number> = { free: 0, starter: 0, playmaker: 0, champion: 0 };
+  let totalScans = 0;
+  let freeCappedToday = 0;
+
+  for (const row of usageRes.rows) {
+    const tier = tierByUser.get(row.user_id) ?? 'free';
+    const count = typeof row.count === 'number' ? row.count : 0;
+    const cap = caps[tier] ?? 0;
+    scansByTier[tier] = (scansByTier[tier] ?? 0) + count;
+    totalsByTier[tier] = (totalsByTier[tier] ?? 0) + 1;
+    if (cap > 0 && count >= cap) {
+      cappedByTier[tier] = (cappedByTier[tier] ?? 0) + 1;
+      if (tier === 'free' && row.ymd === todayYmd) freeCappedToday += 1;
+    }
+    totalScans += count;
+  }
+
+  const capHitRate: Record<string, number> = {};
+  for (const tier of ['free', 'starter', 'playmaker', 'champion']) {
+    const total = totalsByTier[tier] ?? 0;
+    capHitRate[tier] =
+      total === 0 ? 0 : Math.round(((cappedByTier[tier] ?? 0) / total) * 1000) / 10;
+  }
+
+  const spendUsd = Math.round(totalScans * CARD_SCAN_COST_PER_CALL_USD * 10000) / 10000;
+  let costPerPaidSeat: CountResult;
+  if (paidUserCount && paidUserCount > 0) {
+    costPerPaidSeat = { value: Math.round((spendUsd / paidUserCount) * 10000) / 10000 };
+  } else {
+    costPerPaidSeat = { value: spendUsd };
+  }
+
+  return {
+    scans_24h: { value: totalScans },
+    scans_24h_by_tier: { value: scansByTier },
+    cap_hit_rate_24h_by_tier: { value: capHitRate },
+    free_users_capped_today: { value: freeCappedToday },
+    estimated_anthropic_spend_24h_usd: { value: spendUsd },
+    cost_per_paid_seat_24h_usd: costPerPaidSeat,
+  };
+}
+
 // ─── Main entry ───────────────────────────────────────────────────────────
 
 export async function getEconomicMetrics(): Promise<EconomicMetricsReport> {
@@ -868,7 +1024,10 @@ export async function getEconomicMetrics(): Promise<EconomicMetricsReport> {
   const paidSeats = subDist
     ? (subDist['starter'] ?? 0) + (subDist['playmaker'] ?? 0) + (subDist['champion'] ?? 0)
     : null;
-  const askScout = await buildAskScoutMetrics(paidSeats);
+  const [askScout, cardScan] = await Promise.all([
+    buildAskScoutMetrics(paidSeats),
+    buildCardScanMetrics(paidSeats),
+  ]);
 
   const report: EconomicMetricsReport = {
     pp,
@@ -879,6 +1038,7 @@ export async function getEconomicMetrics(): Promise<EconomicMetricsReport> {
     trivia_picks: triviaPicks,
     retention,
     ask_scout: askScout,
+    card_scan: cardScan,
   };
 
   metricsCache = { value: report, expires_at: Date.now() + CACHE_TTL_MS };

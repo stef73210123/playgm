@@ -472,6 +472,10 @@ const DASHBOARD_HTML = /* html */ `<!doctype html>
       <h2>Ask Scout Usage</h2>
       <div id="econ-askscout-body">Loading…</div>
     </div>
+    <div class="card" id="econ-cardscan-card">
+      <h2>Card Scan Usage</h2>
+      <div id="econ-cardscan-body">Loading…</div>
+    </div>
     <div class="card" id="econ-rosters-card">
       <h2>Roster Activity</h2>
       <div id="econ-rosters-body">Loading…</div>
@@ -905,6 +909,44 @@ const DASHBOARD_HTML = /* html */ `<!doctype html>
       <div class="kv" style="margin-top:8px;">
         <span class="k">free users at cap today</span>
         <span>\${freeCappedHtml}</span>
+      </div>
+    \`;
+
+    // ── Card Scan Usage ────────────────────────────────────────────────
+    // Mirrors Ask Scout. Per-scan cost is ~3-5x higher than Ask Scout
+    // (Haiku 4.5 vision: tokens + image MP cost), so the cap-hit signal
+    // is even more important here for both cost containment and as
+    // upgrade pressure on the Free tier.
+    const scan = m.card_scan || {};
+    const scanByTier = (scan.scans_24h_by_tier && scan.scans_24h_by_tier.value) || {};
+    const scanCapHit = (scan.cap_hit_rate_24h_by_tier && scan.cap_hit_rate_24h_by_tier.value) || {};
+    const scanTiers = ['free','starter','playmaker','champion'];
+    const scanMax = Math.max(1, ...scanTiers.map(t => scanByTier[t] ?? 0));
+    const scanRows = scan.scans_24h_by_tier && scan.scans_24h_by_tier.unmeasured
+      ? '<abbr title="' + esc(scan.scans_24h_by_tier.error || '') + '"><span class="tag unmeasured">unmeasured</span></abbr>'
+      : scanTiers.map(t => {
+          const v = scanByTier[t] ?? 0;
+          const hit = scanCapHit[t];
+          const hitStr = (hit != null) ? ' · ' + hit.toFixed(1) + '% cap-hit' : '';
+          return miniBar(t, v, scanMax, v + hitStr);
+        }).join('');
+    const scanFreeCapped = metricVal(scan.free_users_capped_today);
+    const scanFreeCappedHtml = scanFreeCapped == null
+      ? '<abbr title="' + esc(scan.free_users_capped_today && scan.free_users_capped_today.error || '') + '"><span class="tag unmeasured">unmeasured</span></abbr>'
+      : (scanFreeCapped > 0
+          ? '<span style="color:var(--accent);font-weight:600;">' + scanFreeCapped + ' Free users hit scan cap today — conversion target 🎯</span>'
+          : '<span style="color:var(--muted);">0 Free users at scan cap today</span>');
+    el('econ-cardscan-body').innerHTML = \`
+      <div class="tile-grid">
+        \${tileHtml('scans 24h', scan.scans_24h)}
+        \${tileHtml('Anthropic spend 24h', scan.estimated_anthropic_spend_24h_usd, ' USD')}
+        \${tileHtml('cost / paid seat 24h', scan.cost_per_paid_seat_24h_usd, ' USD')}
+      </div>
+      <div style="margin-top:10px;color:var(--muted);font-size:12px;">scans by tier (24h) · cap-hit rate</div>
+      <div style="margin-top:6px;">\${scanRows}</div>
+      <div class="kv" style="margin-top:8px;">
+        <span class="k">free users at scan cap today</span>
+        <span>\${scanFreeCappedHtml}</span>
       </div>
     \`;
 
