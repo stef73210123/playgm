@@ -84,6 +84,14 @@ export interface SubscriptionTierSpec {
    * making the upgrade pressure on Free tangible.
    */
   ask_scout_daily_cap: number;
+  /**
+   * Maximum Card Scan vision calls per UTC day. 0 = blocked, -1 = unlimited.
+   * Bound at the /cards/scan route via cardScanLimiter so over-cap requests
+   * never reach Anthropic. v1 caps: free 2 / starter 5 / playmaker 10 /
+   * champion 20 — sized identically to Ask Scout because both hit the same
+   * Haiku 4.5 endpoint and share identical cost-pressure logic.
+   */
+  card_scan_daily_cap: number;
 }
 
 export interface SubscriptionsSpec {

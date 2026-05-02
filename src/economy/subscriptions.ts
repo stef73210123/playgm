@@ -58,6 +58,18 @@ export function getAskScoutDailyCap(tierId: SubscriptionTierId): number {
   return cap < 0 ? Number.POSITIVE_INFINITY : cap;
 }
 
+/**
+ * Maximum Card Scan vision calls per UTC day. -1 sentinel → Infinity.
+ * Used by server/src/services/cardScanLimiter.ts to gate /cards/scan before
+ * the call hits Anthropic Haiku 4.5 vision. Marginal cost per scan is
+ * ~$0.003-0.005 (image bytes + JSON output) so the cap doubles as cost
+ * containment + upgrade pressure for the Free tier.
+ */
+export function getCardScanDailyCap(tierId: SubscriptionTierId): number {
+  const cap = getSubscription(tierId).card_scan_daily_cap;
+  return cap < 0 ? Number.POSITIVE_INFINITY : cap;
+}
+
 export function listTiers(): SubscriptionTierSpec[] {
   return [...getSpec().tiers];
 }
