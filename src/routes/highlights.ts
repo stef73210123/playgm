@@ -9,6 +9,7 @@
 
 import type { FastifyInstance } from 'fastify';
 import { searchHighlights, type VideoResult } from '../services/youtubeSearch.js';
+import { checkEmbeddability } from '../services/youtube/embeddability.js';
 import { supabase } from '../db/client.js';
 import {
   getPlaylistForPlayer,
@@ -17,6 +18,13 @@ import {
 } from '../services/highlights/playlistResolver.js';
 
 const CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+
+// 2026-05-02: name-based endpoint now feeds the 10-card carousel as a
+// fallback when the modal doesn't have a Supabase player/team UUID. Pull
+// 25 candidates from YouTube search and embeddability-filter down to 10
+// — matches the headroom the SportsDB-backed playlist resolver uses.
+const NAME_BASED_CANDIDATES = 25;
+const NAME_BASED_MAX_RETURNED = 10;
 
 interface CacheEntry {
   ts: number;
@@ -39,7 +47,15 @@ async function fetchWithCache(entityType: string, entityName: string): Promise<V
     entityType === 'team' ? 'team' :
     entityType === 'game' ? 'game' :
     'player';
-  const data = await searchHighlights(entityName, 5, type);
+  // Pull a wide candidate pool then filter by embeddability — the legacy
+  // path returned 5 unfiltered results and the dead/region-locked clips
+  // were the root cause of the "Open in YouTube" failures Stefan saw.
+  // We cache the embeddable-filtered list so the next reader hits warm.
+  const candidates = await searchHighlights(entityName, NAME_BASED_CANDIDATES, type);
+  const ids = candidates.map((c) => c.id);
+  const status = await checkEmbeddability(ids);
+  const keepers = candidates.filter((c) => status.get(c.id)?.embeddable);
+  const data = (keepers.length > 0 ? keepers : candidates).slice(0, NAME_BASED_MAX_RETURNED);
   highlightCache.set(key, { ts: Date.now(), data });
   return data;
 }
@@ -224,10 +240,10 @@ export async function highlightsRoutes(fastify: FastifyInstance): Promise<void> 
           const cached = (data as { meta_json?: { highlight_playlist?: PlaylistEntry[] } } | null)
             ?.meta_json?.highlight_playlist;
           if (Array.isArray(cached) && cached.length > 0) {
-            return reply.send({ playlist: cached.slice(0, 5), source: 'cached' });
+            return reply.send({ playlist: cached.slice(0, 10), source: 'cached' });
           }
         }
-        const playlist = await getPlaylistForPlayer(id, 5);
+        const playlist = await getPlaylistForPlayer(id, 10);
         return reply.send({ playlist, source: 'live' });
       } catch (err) {
         fastify.log.warn(err, `playlist fetch failed for player ${id}`);
@@ -256,11 +272,11 @@ export async function highlightsRoutes(fastify: FastifyInstance): Promise<void> 
         if (!live) {
           const cached = team.meta_json?.highlight_playlist;
           if (Array.isArray(cached) && cached.length > 0) {
-            return reply.send({ playlist: cached.slice(0, 5), source: 'cached' });
+            return reply.send({ playlist: cached.slice(0, 10), source: 'cached' });
           }
         }
         const playlist = team.external_id
-          ? await getPlaylistForTeam(team.external_id, 5)
+          ? await getPlaylistForTeam(team.external_id, 10)
           : [];
         return reply.send({ playlist, source: 'live' });
       } catch (err) {

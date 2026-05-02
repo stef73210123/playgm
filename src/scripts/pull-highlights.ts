@@ -162,7 +162,7 @@ async function pullPlayers(opts: CliOpts): Promise<{ processed: number; updated:
         // updated version.
         playlist = await refreshPlayerPlaylist(
           { ...p, meta_json: meta },
-          { force: opts.force, limit: 5 },
+          { force: opts.force, limit: 10 },
         );
         playlistLengths.push(playlist.length);
       }
@@ -218,15 +218,16 @@ async function pullTeams(opts: CliOpts): Promise<{ processed: number; updated: n
     processed++;
     if (!shouldRefresh(t.meta_json, opts)) continue;
 
-    // Pull 15 candidates (vs the legacy 3) so the playlist resolver has
-    // headroom against the YouTube embeddability filter.
-    const events = await fetchTeamHighlights(t.external_id, 15);
+    // Pull 25 candidates (vs the legacy 3, then 15) so the playlist
+    // resolver has ~2.5× headroom against the YouTube embeddability filter
+    // for the new 10-card carousel.
+    const events = await fetchTeamHighlights(t.external_id, 25);
     if (events.length > 0) {
       const meta = {
         ...(t.meta_json ?? {}),
         // Back-compat: keep the older `recent_highlights` field that
-        // the existing modal still reads. Trim to the user-visible 5.
-        recent_highlights: events.slice(0, 5),
+        // the existing modal still reads. Trim to the user-visible 10.
+        recent_highlights: events.slice(0, 10),
         video_highlight_url: events[0]?.video_url,
         video_highlight_pulled_at: new Date().toISOString(),
       };
@@ -242,14 +243,14 @@ async function pullTeams(opts: CliOpts): Promise<{ processed: number; updated: n
       // meta_json.highlight_playlist on the same row.
       const playlist = await refreshTeamPlaylist(
         { ...t, meta_json: meta },
-        { force: opts.force, limit: 5 },
+        { force: opts.force, limit: 10 },
       );
       playlistLengths.push(playlist.length);
 
-      // Hit-rate accounting — cap candidates at 15 so the ratio is
-      // honest (we never feed more than 15 into the filter).
+      // Hit-rate accounting — cap candidates at 25 so the ratio is
+      // honest (we never feed more than 25 into the filter).
       const lg = (t.category ?? 'unknown').toLowerCase();
-      const cand = Math.min(events.length, 15);
+      const cand = Math.min(events.length, 25);
       leagueHits[lg] = leagueHits[lg] ?? { kept: 0, candidates: 0 };
       leagueHits[lg].candidates += cand;
       leagueHits[lg].kept += playlist.length;

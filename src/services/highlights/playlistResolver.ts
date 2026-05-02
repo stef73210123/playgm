@@ -51,7 +51,11 @@ export interface PlaylistEntry {
 const PLAYLIST_TTL_DAYS = 7;
 const PLAYLIST_TTL_MS = PLAYLIST_TTL_DAYS * 24 * 60 * 60 * 1000;
 
-const CANDIDATES_TO_PULL = 15;
+// 2026-05-02 design: client now renders a 10-card horizontal carousel
+// instead of a 5-chip strip. Pull 25 candidates for the same ~2.5×
+// embeddability headroom we used at the 5-clip target (15/5 vs 25/10).
+const CANDIDATES_TO_PULL = 25;
+const DEFAULT_PLAYLIST_LIMIT = 10;
 
 interface PlayerRow {
   id: string;
@@ -130,7 +134,7 @@ async function buildPlaylistFromCandidates(
  */
 export async function getPlaylistForTeam(
   sportsdbTeamId: string,
-  limit = 5,
+  limit = DEFAULT_PLAYLIST_LIMIT,
 ): Promise<PlaylistEntry[]> {
   if (!sportsdbTeamId) return [];
   const events = await fetchTeamHighlights(sportsdbTeamId, CANDIDATES_TO_PULL);
@@ -147,7 +151,7 @@ export async function getPlaylistForTeam(
  */
 export async function getPlaylistForPlayer(
   playerId: string,
-  limit = 5,
+  limit = DEFAULT_PLAYLIST_LIMIT,
 ): Promise<PlaylistEntry[]> {
   if (!playerId) return [];
 
@@ -214,7 +218,7 @@ export async function refreshTeamPlaylist(
 ): Promise<PlaylistEntry[]> {
   if (!team.external_id) return [];
   const force = opts.force ?? false;
-  const limit = opts.limit ?? 5;
+  const limit = opts.limit ?? DEFAULT_PLAYLIST_LIMIT;
   const meta = team.meta_json ?? {};
   const existing = (meta as { highlight_playlist?: PlaylistEntry[] }).highlight_playlist;
   const resolvedAt = (meta as { highlight_playlist_resolved_at?: string }).highlight_playlist_resolved_at;
@@ -239,7 +243,7 @@ export async function refreshPlayerPlaylist(
   opts: { force?: boolean; limit?: number } = {},
 ): Promise<PlaylistEntry[]> {
   const force = opts.force ?? false;
-  const limit = opts.limit ?? 5;
+  const limit = opts.limit ?? DEFAULT_PLAYLIST_LIMIT;
   const meta = player.meta_json ?? {};
   const existing = (meta as { highlight_playlist?: PlaylistEntry[] }).highlight_playlist;
   const resolvedAt = (meta as { highlight_playlist_resolved_at?: string }).highlight_playlist_resolved_at;
@@ -268,7 +272,7 @@ export async function refreshPlayerPlaylist(
  */
 export async function _buildPlaylistForTests(
   events: TeamHighlightEvent[],
-  limit = 5,
+  limit = DEFAULT_PLAYLIST_LIMIT,
 ): Promise<PlaylistEntry[]> {
   return buildPlaylistFromCandidates(eventsToCandidates(events), limit);
 }
