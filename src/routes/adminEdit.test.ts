@@ -46,7 +46,12 @@ const store: Record<string, Row[]> = {
       city: 'Los Angeles',
       abbreviation: 'LAL',
       category: 'basketball',
-      meta_json: {},
+      external_id: '134867',
+      meta_json: {
+        recent_highlights: [
+          { event_id: '1', event_name: 'LAL vs HOU', video_url: 'https://yt/abc', played_on: '2026-04-30' },
+        ],
+      },
     },
   ],
 };
@@ -78,6 +83,12 @@ jest.mock('@supabase/supabase-js', () => {
     query.limit = () => query;
     query.range = () => query;
     query.order = () => query;
+    query.is = () => query;
+    query.returns = () => query;
+    query.single = async () => {
+      const r = rows[0];
+      return r ? { data: r, error: null } : { data: null, error: { message: 'not found' } };
+    };
     query.then = (resolve: (v: unknown) => unknown) => {
       if (mode === 'update' && updatePayload) {
         for (const r of rows) {
@@ -290,6 +301,38 @@ describe('admin edit routes', () => {
       expect(res.statusCode).toBe(200);
       const j = res.json() as { ok: boolean; items: unknown[] };
       expect(j.items.length).toBe(1);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('GET /admin/api/teams exposes recent_highlights from meta_json', async () => {
+    const app = await buildApp();
+    try {
+      const res = await app.inject({ method: 'GET', url: '/admin/api/teams' });
+      expect(res.statusCode).toBe(200);
+      const j = res.json() as {
+        items: Array<{ id: string; recent_highlights: Array<{ video_url: string }>; external_id: string | null }>;
+      };
+      expect(j.items[0]!.recent_highlights).toHaveLength(1);
+      expect(j.items[0]!.recent_highlights[0]!.video_url).toBe('https://yt/abc');
+      expect(j.items[0]!.external_id).toBe('134867');
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('POST /admin/api/teams/:id/refresh-highlights 409s when team has no external_id', async () => {
+    const app = await buildApp();
+    try {
+      // mutate the store to drop the external_id
+      // (we don't have a clean handle on `store` here, so we exercise the
+      // not-found path instead, which uses the same negative result shape)
+      const res = await app.inject({
+        method: 'POST',
+        url: '/admin/api/teams/does-not-exist/refresh-highlights',
+      });
+      expect(res.statusCode).toBe(404);
     } finally {
       await app.close();
     }

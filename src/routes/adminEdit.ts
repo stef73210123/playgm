@@ -55,6 +55,10 @@ import {
   type SafetyMatrixFile,
 } from '../services/safetyMatrix.js';
 import { invalidateUserFeaturesCache } from '../services/safetyResolver.js';
+import {
+  fetchPlayerHighlight,
+  fetchTeamHighlights,
+} from '../services/sportsdb/highlights.js';
 
 // ─── Project root resolution (mirrors admin.ts) ──────────────────────────
 export function findProjectRoot(): string {
@@ -833,7 +837,7 @@ export async function adminEditRoutes(fastify: FastifyInstance): Promise<void> {
 
     let qb = supabase
       .from('players')
-      .select('id, full_name, position, jersey_number, category, team_id, meta_json', {
+      .select('id, full_name, position, jersey_number, category, team_id, external_id, meta_json', {
         count: 'exact',
       })
       .order('full_name', { ascending: true })
@@ -841,6 +845,8 @@ export async function adminEditRoutes(fastify: FastifyInstance): Promise<void> {
     if (sport) qb = qb.eq('category', sport);
     if (teamId) qb = qb.eq('team_id', teamId);
     if (search) qb = qb.ilike('full_name', `%${search}%`);
+    // Filter for "missing highlight" — used by the dashboard click-through.
+    if (q['missing_highlight'] === '1') qb = qb.is('meta_json->>video_highlight_url', null);
 
     const res = (await qb) as {
       data: Array<{
@@ -850,6 +856,7 @@ export async function adminEditRoutes(fastify: FastifyInstance): Promise<void> {
         jersey_number: number | null;
         category: string;
         team_id: string | null;
+        external_id: string | null;
         meta_json: Record<string, unknown> | null;
       }> | null;
       error: { message: string } | null;
@@ -865,8 +872,11 @@ export async function adminEditRoutes(fastify: FastifyInstance): Promise<void> {
       jersey_number: p.jersey_number,
       sport: p.category,
       team_id: p.team_id,
+      external_id: p.external_id,
       video_highlight_url: (p.meta_json?.['video_highlight_url'] as string | undefined) ?? '',
       video_about_url: (p.meta_json?.['video_about_url'] as string | undefined) ?? '',
+      video_highlight_pulled_at:
+        (p.meta_json?.['video_highlight_pulled_at'] as string | undefined) ?? null,
     }));
     return { ok: true, items, total: res.count ?? items.length, page, per_page: perPage };
   });
@@ -886,7 +896,7 @@ export async function adminEditRoutes(fastify: FastifyInstance): Promise<void> {
     const search = q['q'];
     let qb = supabase
       .from('teams')
-      .select('id, full_name, name, city, abbreviation, category, meta_json', { count: 'exact' })
+      .select('id, full_name, name, city, abbreviation, category, external_id, meta_json', { count: 'exact' })
       .order('full_name', { ascending: true })
       .limit(500);
     if (sport) qb = qb.eq('category', sport);
@@ -899,6 +909,7 @@ export async function adminEditRoutes(fastify: FastifyInstance): Promise<void> {
         city: string | null;
         abbreviation: string | null;
         category: string;
+        external_id: string | null;
         meta_json: Record<string, unknown> | null;
       }> | null;
       error: { message: string } | null;
@@ -914,8 +925,14 @@ export async function adminEditRoutes(fastify: FastifyInstance): Promise<void> {
       city: t.city,
       abbreviation: t.abbreviation,
       sport: t.category,
+      external_id: t.external_id,
       video_highlight_url: (t.meta_json?.['video_highlight_url'] as string | undefined) ?? '',
       video_about_url: (t.meta_json?.['video_about_url'] as string | undefined) ?? '',
+      // SportsDB pull populates this — newest event first.
+      recent_highlights:
+        (t.meta_json?.['recent_highlights'] as Array<{ event_id: string; event_name: string; video_url: string; played_on: string | null }> | undefined) ?? [],
+      video_highlight_pulled_at:
+        (t.meta_json?.['video_highlight_pulled_at'] as string | undefined) ?? null,
     }));
     return { ok: true, items, total: res.count ?? items.length };
   });
@@ -926,6 +943,74 @@ export async function adminEditRoutes(fastify: FastifyInstance): Promise<void> {
     const errs = validateVideoUrlPayload(body);
     if (errs.length) return badRequest(reply, errs);
     return updateMetaJsonVideoUrls('teams', id, body, reply);
+  });
+
+  // POST /admin/api/teams/:id/refresh-highlights
+  // Pulls the most recent N events with strVideo from TheSportsDB and
+  // writes them to meta_json.recent_highlights. Also bumps
+  // meta_json.video_highlight_url to the newest event.
+  fastify.post('/admin/api/teams/:id/refresh-highlights', async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const { data: row, error } = await supabase
+      .from('teams')
+      .select('id, external_id, meta_json')
+      .eq('id', id)
+      .single();
+    if (error || !row) return notFound(reply, `team ${id}`);
+    const ext = (row as { external_id: string | null }).external_id;
+    if (!ext) {
+      reply.code(409).send({ ok: false, error: 'team has no external_id (TheSportsDB idTeam)' });
+      return reply;
+    }
+    const events = await fetchTeamHighlights(ext, 5);
+    const meta = { ...((row as { meta_json: Record<string, unknown> | null }).meta_json ?? {}) };
+    if (events.length > 0) {
+      meta['recent_highlights'] = events;
+      meta['video_highlight_url'] = events[0]?.video_url;
+      meta['video_highlight_pulled_at'] = new Date().toISOString();
+    }
+    const { error: uerr } = await supabase
+      .from('teams')
+      .update({ meta_json: meta })
+      .eq('id', id);
+    if (uerr) {
+      reply.code(500).send({ ok: false, error: uerr.message });
+      return reply;
+    }
+    return { ok: true, id, count: events.length, recent_highlights: events, meta_json: meta };
+  });
+
+  // POST /admin/api/players/:id/refresh-highlight
+  // Mirror endpoint for individual players — calls lookup/player and
+  // writes meta_json.video_highlight_url when SportsDB has a YouTube URL.
+  fastify.post('/admin/api/players/:id/refresh-highlight', async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const { data: row, error } = await supabase
+      .from('players')
+      .select('id, external_id, meta_json')
+      .eq('id', id)
+      .single();
+    if (error || !row) return notFound(reply, `player ${id}`);
+    const ext = (row as { external_id: string | null }).external_id;
+    if (!ext) {
+      reply.code(409).send({ ok: false, error: 'player has no external_id (TheSportsDB idPlayer)' });
+      return reply;
+    }
+    const { youtube_url } = await fetchPlayerHighlight(ext);
+    const meta = { ...((row as { meta_json: Record<string, unknown> | null }).meta_json ?? {}) };
+    if (youtube_url) {
+      meta['video_highlight_url'] = youtube_url;
+      meta['video_highlight_pulled_at'] = new Date().toISOString();
+    }
+    const { error: uerr } = await supabase
+      .from('players')
+      .update({ meta_json: meta })
+      .eq('id', id);
+    if (uerr) {
+      reply.code(500).send({ ok: false, error: uerr.message });
+      return reply;
+    }
+    return { ok: true, id, youtube_url, meta_json: meta };
   });
 
   // ═══ CARDS API ═══════════════════════════════════════════════════════════
@@ -1310,7 +1395,9 @@ function renderTeamsPage(): string {
     <table id="tbl">
       <thead><tr>
         <th>Team</th><th>Abbr</th><th>Sport</th>
-        <th>Highlight URL</th><th>About URL</th><th>Actions</th>
+        <th>Highlight URL</th><th>About URL</th>
+        <th>Recent (SportsDB)</th>
+        <th>Actions</th>
       </tr></thead>
       <tbody></tbody>
     </table>
@@ -1494,16 +1581,49 @@ const TEAMS_JS = /* javascript */ `
     if (!json.ok) { el('meta').textContent = json.error || 'error'; return; }
     el('meta').textContent = json.items.length + ' / ' + json.total + ' teams';
     const tbody = el('tbl').querySelector('tbody');
-    tbody.innerHTML = json.items.map(t => \`
-      <tr data-id="\${esc(t.id)}">
-        <td>\${esc(t.full_name)}</td>
-        <td>\${esc(t.abbreviation||'')}</td>
-        <td>\${esc(t.sport)}</td>
-        <td><input class="hl" value="\${esc(t.video_highlight_url)}" placeholder="https://…" /></td>
-        <td><input class="ab" value="\${esc(t.video_about_url)}" placeholder="https://…" /></td>
-        <td class="row-actions"><button class="btn primary save">Save</button><div class="hint status"></div></td>
-      </tr>\`).join('');
+    tbody.innerHTML = json.items.map(t => {
+      const recent = Array.isArray(t.recent_highlights) ? t.recent_highlights : [];
+      const recentHtml = recent.length === 0
+        ? '<span class="muted">none — try Refresh</span>'
+        : recent.slice(0, 3).map(h =>
+            '<div class="hint"><a href="' + esc(h.video_url) + '" target="_blank" rel="noopener">' +
+            esc((h.played_on||'') + ' · ' + (h.event_name||'')).slice(0, 80) + '</a></div>'
+          ).join('');
+      const pulledAt = t.video_highlight_pulled_at ? '<div class="muted hint">pulled ' + esc(t.video_highlight_pulled_at.slice(0,10)) + '</div>' : '';
+      return '<tr data-id="' + esc(t.id) + '" data-ext="' + esc(t.external_id||'') + '">' +
+        '<td>' + esc(t.full_name) + '</td>' +
+        '<td>' + esc(t.abbreviation||'') + '</td>' +
+        '<td>' + esc(t.sport) + '</td>' +
+        '<td><input class="hl" value="' + esc(t.video_highlight_url) + '" placeholder="https://…" />' + pulledAt + '</td>' +
+        '<td><input class="ab" value="' + esc(t.video_about_url) + '" placeholder="https://…" /></td>' +
+        '<td class="recent-cell">' + recentHtml + '</td>' +
+        '<td class="row-actions">' +
+          '<button class="btn primary save">Save</button> ' +
+          '<button class="btn refresh" title="Pull from TheSportsDB">↻ SportsDB</button>' +
+          '<div class="hint status"></div>' +
+        '</td>' +
+      '</tr>';
+    }).join('');
     tbody.querySelectorAll('button.save').forEach(b => b.addEventListener('click', save));
+    tbody.querySelectorAll('button.refresh').forEach(b => b.addEventListener('click', refreshOne));
+  }
+  async function refreshOne(ev) {
+    const tr = ev.target.closest('tr');
+    const id = tr.dataset.id;
+    const status = tr.querySelector('.status');
+    if (!tr.dataset.ext) {
+      status.innerHTML = '<span class="err">no SportsDB id</span>';
+      return;
+    }
+    status.textContent = 'pulling…';
+    const res = await fetch('/admin/api/teams/' + id + '/refresh-highlights', { method: 'POST' });
+    const json = await res.json();
+    if (!res.ok || !json.ok) {
+      status.innerHTML = '<span class="err">' + esc(json.error || 'error') + '</span>';
+      return;
+    }
+    status.innerHTML = '<span class="ok">' + json.count + ' clips</span>';
+    setTimeout(() => load(), 600);
   }
   async function save(ev) {
     const tr = ev.target.closest('tr');
