@@ -32,6 +32,7 @@ import { playersRoutes } from './routes/players.js';
 import { authRoutes } from './routes/auth.js';
 import { meRoutes } from './routes/me.js';
 import { startStatsRefreshJobs } from './jobs/refreshStats.js';
+import { startHighlightsCron } from './jobs/highlightsCron.js';
 
 const PORT = Number(process.env.PORT ?? 3001);
 const HOST = '0.0.0.0';
@@ -119,6 +120,7 @@ try {
   startMorningReveal(server.log); // 6am UTC victory reveal
   startLiveScoreSync();           // 120-s live score poll (War Room)
   startStatsRefreshJobs(server.log); // Per-league ESPN refresh (daily 04:00 ET + hourly in-season)
+  startHighlightsCron(server.log);   // Daily 05:30 ET — team + player highlight refresh
 
   // Daily 5am ET highlight cache refresh (America/New_York handles DST automatically)
   cron.schedule('0 5 * * *', () => warmHighlightCache(server.log), {
