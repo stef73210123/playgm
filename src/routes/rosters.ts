@@ -7,16 +7,21 @@
  * behind the `multiRoster` / `draftEvent` feature flags.
  *
  * Routes:
- *   GET  /rosters              — list current-week rosters for the caller
- *   POST /rosters              — create a new roster in the current week's draft event
- *   GET  /drafts/current       — the caller's in-progress weekly draft event
- *   POST /drafts/:id/pick      — record a snake-draft pick onto a specific roster
+ *   GET  /rosters                          — list current-week rosters for the caller
+ *   POST /rosters                          — create a new roster in the current week's draft event
+ *   GET  /rosters/:id/weekly-projection    — { games_count, projected_points } for the roster (cached 1h)
+ *   GET  /drafts/current                   — the caller's in-progress weekly draft event
+ *   POST /drafts/:id/pick                  — record a snake-draft pick onto a specific roster
  */
 
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { requireAuth, type AuthenticatedRequest } from '../middleware/auth.js';
 import { validateRoster, type RosterCard } from '../economy/index.js';
+import {
+  computeWeeklyProjection,
+  type WeeklyProjection,
+} from '../services/weeklyProjection.js';
 
 const pickSchema = z.object({
   rosterId: z.string().min(1),
@@ -113,6 +118,30 @@ export async function rostersRoutes(fastify: FastifyInstance): Promise<void> {
         accepted: true,
         recordedAt: new Date().toISOString(),
       };
+    },
+  );
+
+  // ─── GET /rosters/:id/weekly-projection — games count + projected points
+  // Drives the chips on the roster card. Stubbed deterministically from the
+  // roster id (real impl reads the roster's drafted players, sums per-player
+  // upcoming-games from SportsDB, and weights season-to-date PPG by games
+  // remaining this week). Cached in-process with a 1-hour TTL so we don't
+  // hit upstream on every render.
+  fastify.get<{ Params: { id: string } }>(
+    '/rosters/:id/weekly-projection',
+    { preHandler: requireAuth },
+    async (req, reply) => {
+      const { id } = req.params;
+      if (!id || id.length === 0) {
+        return reply.code(400).send({ error: 'roster id required' });
+      }
+      const result: WeeklyProjection = await computeWeeklyProjection(id);
+      return reply.send({
+        rosterId: id,
+        games_count: result.gamesCount,
+        projected_points: result.projectedPoints,
+        cachedUntil: result.cachedUntilIso,
+      });
     },
   );
 
