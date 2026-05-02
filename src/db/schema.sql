@@ -881,6 +881,18 @@ CREATE TABLE IF NOT EXISTS trivia_results (
 );
 CREATE INDEX trivia_results_user_idx ON trivia_results (user_id, answered_at DESC);
 
+-- ─── trivia_offline_sync — dedup table for offline trivia score sync ─────
+-- Holds (user_id, local_id) pairs for every offline trivia score we've
+-- already applied. Lets the client safely retry the /trivia/scores/sync
+-- batch endpoint without double-counting points. Read by
+-- services/triviaScoreSync.ts.
+CREATE TABLE IF NOT EXISTS trivia_offline_sync (
+  user_id    UUID         NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,
+  local_id   TEXT         NOT NULL,
+  applied_at TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (user_id, local_id)
+);
+
 -- ─── avatar_items (the catalog from src/data/avatarCatalog.ts) ─────────────
 CREATE TABLE IF NOT EXISTS avatar_items (
   id              TEXT                PRIMARY KEY,    -- e.g. 'avatar_scout_default'
