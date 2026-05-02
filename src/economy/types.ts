@@ -66,15 +66,55 @@ export interface SubscriptionPackAllocation {
   count: number;
 }
 
+/**
+ * Snake = positional draft, single round of pick rotation. Cap = auction-style
+ * salary-cap draft (GDD §4). Free tier is restricted to snake; all paid tiers
+ * unlock both. Server enforces the gate at draft creation time
+ * (practice-drafts + rosters routes).
+ */
+export type DraftMode = 'snake' | 'cap';
+
+/**
+ * Granularity of practice-draft snake-position control:
+ *   - none           — auto-assigned, no influence
+ *   - random         — re-roll button only
+ *   - preferred_slot — soft preference, server best-effort honors
+ *   - exact_slot     — hard pin to a specific slot (Champion)
+ */
+export type DraftPositionControl =
+  | 'none'
+  | 'random'
+  | 'preferred_slot'
+  | 'exact_slot';
+
 export interface SubscriptionTierSpec {
   tier_id: SubscriptionTierId;
   name: string;
   monthly_price_usd: number;
   rosters_per_week: number;
   practice_drafts_per_week: number;
+  /** Legacy boolean — true if cap is in `draft_modes`. New code: branch on `draft_modes`. */
   cap_mode: boolean;
+  /** Allowed draft modes for this tier. Free = ['snake']; paid = ['snake','cap']. */
+  draft_modes: DraftMode[];
+  /** Free-agent pool size per roster per week (GDD §3.E). */
+  fa_pool_size_per_week: number;
+  /** Practice-draft slot-picker granularity per tier — see DraftPositionControl. */
+  draft_position_control: DraftPositionControl;
+  /**
+   * Maximum kid profiles a single subscription can host. v2 keeps this at 1
+   * for every tier — Family-tier handling deferred until Champion adoption
+   * signals real demand for multi-account households.
+   */
+  family_max_profiles: number;
   monthly_pack_allocation: SubscriptionPackAllocation[];
   card_inventory_cap: number;
+  /**
+   * Daily PP allowance granted on first login each UTC day. v2 reframes this
+   * from "boost on top of base" into the headline daily allowance each tier
+   * advertises (200 / 500 / 1000 / 2000). Field name preserved for backward
+   * compatibility with earnRates / wallet code.
+   */
   daily_pp_boost: number;
   /**
    * Maximum Ask Scout LLM questions per UTC day. 0 = blocked, -1 = unlimited.

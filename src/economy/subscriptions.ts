@@ -6,6 +6,8 @@
 
 import { loadSubscriptionsSpec } from './loader.js';
 import type {
+  DraftMode,
+  DraftPositionControl,
   SubscriptionPackAllocation,
   SubscriptionTierId,
   SubscriptionTierSpec,
@@ -68,6 +70,35 @@ export function getAskScoutDailyCap(tierId: SubscriptionTierId): number {
 export function getCardScanDailyCap(tierId: SubscriptionTierId): number {
   const cap = getSubscription(tierId).card_scan_daily_cap;
   return cap < 0 ? Number.POSITIVE_INFINITY : cap;
+}
+
+/**
+ * Allowed draft modes for the tier. Free → ['snake']; paid → ['snake','cap'].
+ * Used by practice-drafts + rosters routes to gate cap-mode drafts at
+ * creation time.
+ */
+export function getDraftModes(tierId: SubscriptionTierId): DraftMode[] {
+  return [...getSubscription(tierId).draft_modes];
+}
+
+/** True if the requested mode is allowed by the tier. */
+export function isDraftModeAllowed(
+  tierId: SubscriptionTierId,
+  mode: DraftMode,
+): boolean {
+  return getSubscription(tierId).draft_modes.includes(mode);
+}
+
+/** Free-agent pool size per roster per week. */
+export function getFAPoolSize(tierId: SubscriptionTierId): number {
+  return getSubscription(tierId).fa_pool_size_per_week;
+}
+
+/** Practice-draft snake-position control granularity. */
+export function getDraftPositionControl(
+  tierId: SubscriptionTierId,
+): DraftPositionControl {
+  return getSubscription(tierId).draft_position_control;
 }
 
 export function listTiers(): SubscriptionTierSpec[] {

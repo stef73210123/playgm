@@ -29,6 +29,12 @@ export {
   getMonthlyPackAllocation,
   getDailyBoost,
   getInventoryCap,
+  getAskScoutDailyCap,
+  getCardScanDailyCap,
+  getDraftModes,
+  isDraftModeAllowed,
+  getFAPoolSize,
+  getDraftPositionControl,
   listTiers as listSubscriptionTiers,
 } from './subscriptions.js';
 
