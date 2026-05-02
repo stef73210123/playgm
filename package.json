@@ -5,7 +5,8 @@
   "main": "src/index.js",
   "scripts": {
     "start": "node src/index.js",
-    "refresh": "node src/jobs/morningRefresh.js"
+    "refresh": "node src/jobs/morningRefresh.js",
+    "report": "node src/jobs/viewReport.js"
   },
   "dependencies": {
     "better-sqlite3": "^9.6.0",

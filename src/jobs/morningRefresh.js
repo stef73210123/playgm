@@ -5,13 +5,16 @@
  *   1. Fetch latest player details from thesportsdb
  *   2. Fetch their most recent event/result
  *   3. Compare against the last stored snapshot (diff)
- *   4. Write a new snapshot and log the diff
+ *   4. Write a new snapshot only when stats changed
+ *   5. Save a dated diff report to reports/YYYY-MM-DD.json
  *
  * Runs standalone (`node src/jobs/morningRefresh.js`) or
  * is called by the cron scheduler in src/index.js.
  */
 
 require('dotenv').config();
+const fs   = require('fs');
+const path = require('path');
 const { lookupPlayer, lastTeamEvents } = require('../api/sportsdb');
 const {
   getAllPlayers, upsertPlayer,
@@ -100,7 +103,10 @@ async function refreshPlayer(player) {
   const prev      = getLatestSnapshot(player.id);
   const diff      = diffSnapshots(prev, snapshot);
 
-  insertSnapshot(player.id, snapshot);
+  // Only write a new snapshot row when something actually changed (or first load)
+  if (diff.length > 0) {
+    insertSnapshot(player.id, snapshot);
+  }
   return { status: 'ok', diff };
 }
 
@@ -154,8 +160,32 @@ async function run() {
     diffSummary,
   });
 
+  writeDiffFile(players.length, updated, failed, diffSummary);
+
   console.log(`\n=== Done — ${updated} updated, ${failed} failed ===\n`);
   printDiffReport(diffSummary);
+}
+
+function writeDiffFile(total, updated, failed, diffSummary) {
+  const reportsDir = path.resolve(process.env.REPORTS_DIR || './reports');
+  fs.mkdirSync(reportsDir, { recursive: true });
+
+  const date = new Date().toISOString().slice(0, 10);
+  const filePath = path.join(reportsDir, `${date}.json`);
+
+  const changes = diffSummary.filter((e) => e.diff && e.diff.length > 0 && e.diff[0].field !== 'initial_load');
+
+  const report = {
+    date,
+    refreshed_at:  new Date().toISOString(),
+    total_players: total,
+    updated,
+    failed,
+    changes,
+  };
+
+  fs.writeFileSync(filePath, JSON.stringify(report, null, 2));
+  console.log(`Diff report saved → ${filePath}`);
 }
 
 function printDiffReport(diffSummary) {
