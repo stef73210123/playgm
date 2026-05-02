@@ -28,6 +28,8 @@ import { adminEditRoutes } from './routes/adminEdit.js';
 import { adminEditConfigRoutes } from './routes/adminEditConfig.js';
 import { runtimeConfigRoutes } from './routes/runtimeConfig.js';
 import { playersRoutes } from './routes/players.js';
+import { authRoutes } from './routes/auth.js';
+import { meRoutes } from './routes/me.js';
 import { startStatsRefreshJobs } from './jobs/refreshStats.js';
 
 const PORT = Number(process.env.PORT ?? 3001);
@@ -92,6 +94,8 @@ await server.register(adminEditRoutes, { prefix: '/' });
 await server.register(adminEditConfigRoutes, { prefix: '/' });
 await server.register(runtimeConfigRoutes, { prefix: '/' });
 await server.register(playersRoutes, { prefix: '/' });
+await server.register(authRoutes, { prefix: '/' });
+await server.register(meRoutes, { prefix: '/' });
 
 // ─── Start ───────────────────────────────────────────────────────────────────
 
