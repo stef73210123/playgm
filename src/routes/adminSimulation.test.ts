@@ -14,7 +14,12 @@ process.env['ADMIN_EDIT_AUTOCOMMIT'] = '0';
 jest.mock('@supabase/supabase-js', () => ({
   __esModule: true,
   createClient: () => ({
-    from: () => ({}),
+    from: () => ({
+      upsert: () => Promise.resolve({ error: null }),
+      select: () => ({
+        eq: () => ({ order: () => ({ limit: () => Promise.resolve({ data: [], error: null }) }) }),
+      }),
+    }),
     auth: { persistSession: false },
   }),
 }));
@@ -64,7 +69,7 @@ async function buildApp() {
   return app;
 }
 
-describe('admin scoring editor routes', () => {
+describe('admin simulation routes', () => {
   beforeEach(() => {
     mockWrites.length = 0;
   });
@@ -138,6 +143,46 @@ describe('admin scoring editor routes', () => {
       expect(j.doc.by_sport.basketball.weights.points).toBe(1.5);
       expect(j.doc.by_sport.basketball.weights.rebounds).toBe(1.2);
       expect(mockWrites.length).toBe(1);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('GET /admin/simulate renders the simulator form', async () => {
+    const app = await buildApp();
+    try {
+      const res = await app.inject({ method: 'GET', url: '/admin/simulate' });
+      expect(res.statusCode).toBe(200);
+      expect(res.headers['content-type']).toMatch(/text\/html/);
+      expect(res.body).toContain('Fairness Simulator');
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('POST /admin/api/simulate rejects empty leagues', async () => {
+    const app = await buildApp();
+    try {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/admin/api/simulate',
+        payload: { leagues: [] },
+      });
+      expect(res.statusCode).toBe(400);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('GET /admin/api/simulate returns runs+trend (empty in test)', async () => {
+    const app = await buildApp();
+    try {
+      const res = await app.inject({ method: 'GET', url: '/admin/api/simulate' });
+      expect(res.statusCode).toBe(200);
+      const j = res.json() as { ok: boolean; runs: unknown[]; trend: unknown[] };
+      expect(j.ok).toBe(true);
+      expect(Array.isArray(j.runs)).toBe(true);
+      expect(Array.isArray(j.trend)).toBe(true);
     } finally {
       await app.close();
     }

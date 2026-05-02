@@ -1,17 +1,21 @@
 /**
- * adminSimulation.ts — admin routes for the scoring formula editor
- * (mirrors /admin/edit/packs pattern). The fairness-simulator routes
- * live in this file too once the next commit lands; for now this is
- * just the editor surface so admins can tune scoring before invoking
- * the simulator.
+ * adminSimulation.ts — admin routes for the fairness simulator + scoring editor.
  *
- * Surfaces:
+ * Two surfaces, both unauthenticated (same threat model as /admin/dashboard):
+ *
+ * Scoring editor (mirrors /admin/edit/packs pattern):
  *   GET   /admin/edit/scoring          — HTML editor
  *   GET   /admin/api/scoring           — return current formula JSON
  *   PATCH /admin/api/scoring           — validate + write +
  *                                        chore(content): update scoring formula
+ *
+ * Simulator:
+ *   GET   /admin/simulate              — HTML form + run + results page
+ *   POST  /admin/api/simulate          — kick off a run, returns run_id
+ *   GET   /admin/api/simulate/:id      — poll status / progress / results
+ *   GET   /admin/api/simulate          — list recent runs (for dashboard card)
  */
-import type { FastifyInstance } from 'fastify';
+import type { FastifyInstance, FastifyReply } from 'fastify';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import {
@@ -27,6 +31,19 @@ import {
   type Sport,
   FORMULA_PATH,
 } from '../services/simulation/scoringFormula.js';
+import {
+  type League,
+  runSimulation,
+} from '../services/simulation/seasonSimulator.js';
+import {
+  completeRun,
+  createRun,
+  failRun,
+  fetchRecentRunsFromSupabase,
+  getRun,
+  listRecentRuns,
+  updateProgress,
+} from '../services/simulation/simulationStore.js';
 
 // ─── File helpers (same conventions as adminEditConfig.ts) ───────────────
 async function readFormula(): Promise<ScoringFormulaFile> {
@@ -43,6 +60,7 @@ function relFromRoot(absPath: string): string {
 
 // ─── Validation ──────────────────────────────────────────────────────────
 const SPORTS: Sport[] = ['basketball', 'football', 'baseball', 'hockey', 'soccer'];
+const LEAGUES: League[] = ['nba', 'nfl', 'mlb', 'nhl', 'mls'];
 
 function isFiniteNum(v: unknown): v is number {
   return typeof v === 'number' && Number.isFinite(v);
@@ -180,8 +198,12 @@ function pageHtml(title: string, h1: string, bodyInner: string, scriptJs: string
 </body></html>`;
 }
 
+// suppress unused-import warning under strict tsc
+void ({} as FastifyReply);
+
 // ─── Route registration ──────────────────────────────────────────────────
 export async function adminSimulationRoutes(fastify: FastifyInstance): Promise<void> {
+  // ═══ SCORING EDITOR ═════════════════════════════════════════════════════
   fastify.get('/admin/edit/scoring', async (_req, reply) => {
     reply.type('text/html; charset=utf-8');
     return pageHtml(
@@ -189,6 +211,7 @@ export async function adminSimulationRoutes(fastify: FastifyInstance): Promise<v
       'Fantasy Scoring Formula',
       `<div class="muted" style="margin-bottom:10px;">
         Source: <code>data/economy/pgm_scoring_formula.json</code> · auto-commits on save.
+        After editing, run a fresh <a href="/admin/simulate" style="color:var(--accent);">simulation</a> to see distribution shifts before the live config is touched.
       </div>
       <div id="root">Loading…</div>
       <div class="card-block">
@@ -220,18 +243,159 @@ export async function adminSimulationRoutes(fastify: FastifyInstance): Promise<v
     const commit = autoCommit(relFromRoot(FORMULA_PATH), 'chore(content): update scoring formula');
     return { ok: true, doc: merged, commit };
   });
+
+  // ═══ SIMULATOR ══════════════════════════════════════════════════════════
+  fastify.get('/admin/simulate', async (_req, reply) => {
+    reply.type('text/html; charset=utf-8');
+    return pageHtml(
+      'Simulate',
+      'Fairness Simulator',
+      `<div class="muted" style="margin-bottom:10px;">
+        Replays N seasons of cached <code>player_stats</code> through the current
+        <a href="/admin/edit/scoring" style="color:var(--accent);">scoring formula</a>
+        with synthetic users, weekly redrafts, daily FA pickups, and card application.
+        Surfaces fairness metrics + suggested adjustments before you touch the live config.
+      </div>
+      <div class="card-block" id="form">
+        <div style="display:grid;grid-template-columns:repeat(2, 1fr);gap:14px;">
+          <label>Leagues
+            <div id="leagues" style="display:flex;gap:6px;flex-wrap:wrap;margin-top:4px;"></div>
+          </label>
+          <label>Seasons
+            <select id="seasons" style="margin-top:4px;">
+              <option value="1" selected>1</option>
+              <option value="2">2</option>
+              <option value="3">3</option>
+            </select>
+          </label>
+          <label>Synthetic users
+            <select id="users" style="margin-top:4px;">
+              <option value="100" selected>100 (smoke test)</option>
+              <option value="500">500</option>
+              <option value="1000">1,000 (full)</option>
+            </select>
+          </label>
+          <label>Cards / FA
+            <div style="margin-top:4px;display:flex;gap:14px;font-size:13px;">
+              <label><input type="checkbox" id="cards" checked /> Cards</label>
+              <label><input type="checkbox" id="fa" checked /> Free agents</label>
+            </div>
+          </label>
+        </div>
+        <div style="margin-top:14px;">
+          <button class="btn primary" id="run">Run Simulation</button>
+          <span class="hint" id="status" style="margin-left:10px;"></span>
+        </div>
+      </div>
+      <div class="card-block" id="progress" style="display:none;">
+        <h3 style="margin:0 0 8px;">Run progress</h3>
+        <div id="progressBar" style="background:var(--card-2);border-radius:8px;height:14px;overflow:hidden;">
+          <div id="progressFill" style="background:var(--accent);height:100%;width:0%;transition:width .3s;"></div>
+        </div>
+        <div class="muted" id="progressNote" style="margin-top:6px;font-size:12px;">…</div>
+      </div>
+      <div id="results"></div>`,
+      SIMULATE_JS,
+    );
+  });
+
+  fastify.post('/admin/api/simulate', async (req, reply) => {
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const leagues = Array.isArray(body['leagues']) ? (body['leagues'] as string[]) : ['nfl'];
+    const seasons = Math.min(3, Math.max(1, Number(body['seasons'] ?? 1)));
+    const userCount = Math.min(2000, Math.max(10, Number(body['user_count'] ?? 100)));
+    const disableCards = body['disable_cards'] === true;
+    const disableFA = body['disable_fa'] === true;
+    const seed = Number(body['seed'] ?? 42);
+
+    const valid = leagues.filter((l): l is League => LEAGUES.includes(l as League));
+    if (valid.length === 0) {
+      return badRequest(reply, [{ field: 'leagues', message: 'pick at least one league' }]);
+    }
+
+    let formula: ScoringFormulaFile;
+    try {
+      formula = await readFormula();
+    } catch (err) {
+      reply.code(500).send({ ok: false, error: err instanceof Error ? err.message : 'load formula failed' });
+      return reply;
+    }
+
+    const rec = createRun({ formula, leagues: valid, syntheticUserCount: userCount });
+
+    setImmediate(() => {
+      try {
+        const result = runSimulation({
+          leagues: valid,
+          seasons,
+          formula,
+          seed,
+          syntheticUserCountOverride: userCount,
+          disableCards,
+          disableFA,
+          onProgress: (frac, note) => updateProgress(rec.id, frac, note),
+        });
+        completeRun(rec.id, result);
+      } catch (err) {
+        failRun(rec.id, err);
+      }
+    });
+
+    return { ok: true, run_id: rec.id };
+  });
+
+  fastify.get('/admin/api/simulate/:id', async (req) => {
+    const { id } = req.params as { id: string };
+    const r = getRun(id);
+    if (!r) return { ok: false, error: 'not found' };
+    return {
+      ok: true,
+      id: r.id,
+      status: r.status,
+      progress: r.progress,
+      progress_note: r.progress_note,
+      formula_version: r.formula_version,
+      seasons_simulated: r.seasons_simulated,
+      synthetic_user_count: r.synthetic_user_count,
+      started_at: r.started_at,
+      completed_at: r.completed_at,
+      fairness_score: r.fairness_score,
+      results: r.results,
+      error: r.error,
+    };
+  });
+
+  fastify.get('/admin/api/simulate', async () => {
+    const local = listRecentRuns(20).map((r) => ({
+      id: r.id,
+      status: r.status,
+      started_at: r.started_at,
+      completed_at: r.completed_at,
+      fairness_score: r.fairness_score,
+    }));
+    const supa = await fetchRecentRunsFromSupabase(20);
+    return { ok: true, runs: local, trend: supa };
+  });
 }
 
-// ─── Inline editor JS ────────────────────────────────────────────────────
+// ─── Inline editor JS modules ────────────────────────────────────────────
 const COMMON_JS = /* javascript */ `
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 function showStatus(el, ok, txt) {
   el.innerHTML = '<span class="' + (ok?'ok':'err') + '">' + esc(txt) + '</span>';
   if (ok) setTimeout(() => el.textContent='', 2500);
 }
-async function fetchJson(url, opts) { const res = await fetch(url, opts || {}); return { ok: res.ok, json: await res.json() }; }
+async function fetchJson(url, opts) {
+  const res = await fetch(url, opts || {});
+  return { ok: res.ok, json: await res.json() };
+}
 async function patchJson(url, body) {
   const res = await fetch(url, { method:'PATCH', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) });
+  const j = await res.json();
+  return { ok: res.ok && j.ok, json: j };
+}
+async function postJson(url, body) {
+  const res = await fetch(url, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) });
   const j = await res.json();
   return { ok: res.ok && j.ok, json: j };
 }
@@ -283,11 +447,20 @@ const SCORING_JS = /* javascript */ `
       '</div>';
     root.innerHTML = html;
   }
+  function applyPrefilledChanges(changes) {
+    for (const [path, value] of Object.entries(changes)) {
+      const el = document.querySelector('[data-path="' + path + '"]');
+      if (el) { el.value = value; el.style.background = 'rgba(108,212,255,0.18)'; }
+    }
+  }
   async function load() {
     const r = await fetchJson('/admin/api/scoring');
     if (!r.ok) return;
     doc = r.json.doc;
     render();
+    const params = new URLSearchParams(location.search);
+    const prefill = params.get('prefill');
+    if (prefill) { try { applyPrefilledChanges(JSON.parse(prefill)); } catch {} }
   }
   function collectPatch() {
     const patch = { by_sport: {}, global: {} };
@@ -312,5 +485,125 @@ const SCORING_JS = /* javascript */ `
   });
   document.getElementById('reload').addEventListener('click', load);
   load();
+})();
+`;
+
+const SIMULATE_JS = /* javascript */ `
+(() => {
+  ${COMMON_JS}
+  const LEAGUE_LABELS = { nba: 'NBA', nfl: 'NFL', mlb: 'MLB', nhl: 'NHL', mls: 'MLS' };
+  function renderLeaguePicker() {
+    const root = document.getElementById('leagues');
+    root.innerHTML = Object.keys(LEAGUE_LABELS).map(l =>
+      '<label style="font-size:13px;"><input type="checkbox" name="lg" value="' + l + '"' + (l==='nfl'?' checked':'') + ' /> ' + LEAGUE_LABELS[l] + '</label>'
+    ).join('');
+  }
+  function selectedLeagues() {
+    return Array.from(document.querySelectorAll('input[name="lg"]:checked')).map(el => el.value);
+  }
+  function fmt(n) { return n == null ? '—' : Number.isFinite(n) ? Math.round(n*100)/100 : '—'; }
+  function pct(n) { return n == null ? '—' : (Math.round(n*10)/10) + '%'; }
+  function bar(bins, color) {
+    if (!bins || bins.length === 0) return '';
+    const max = Math.max(...bins);
+    return '<svg viewBox="0 0 ' + bins.length + ' 40" preserveAspectRatio="none" style="width:100%;height:80px;background:var(--card-2);border-radius:6px;">' +
+      bins.map((v, i) => {
+        const h = max > 0 ? (v/max)*38 : 0;
+        return '<rect x="' + i + '" y="' + (40-h) + '" width="0.85" height="' + h + '" fill="' + (color||'#6cd4ff') + '" />';
+      }).join('') + '</svg>';
+  }
+  function renderResults(data) {
+    const root = document.getElementById('results');
+    if (!data || !data.results) {
+      root.innerHTML = '<div class="card-block err">No results.</div>';
+      return;
+    }
+    const r = data.results;
+    const f = r.fairness;
+    const ratioColor = f.top1_to_median_ratio >= 10 ? '#f87171' : f.top1_to_median_ratio >= 7 ? '#facc15' : '#4ade80';
+    const stabColor = f.rank_stability >= 0.5 ? '#4ade80' : f.rank_stability >= 0.3 ? '#facc15' : '#f87171';
+    const compColor = f.competitive_pct >= 50 ? '#4ade80' : f.competitive_pct >= 30 ? '#facc15' : '#f87171';
+    const sportRows = f.sport_contributions.map(s =>
+      '<tr><td>' + esc(s.sport) + '</td><td>' + fmt(s.meanPerRoster) + '</td><td>' + fmt(s.top1pct) + '</td></tr>'
+    ).join('');
+    const adj = (f.suggested_adjustments || []).map(a => '<li>' + esc(a) + '</li>').join('');
+    const cu = f.card_uplift_distribution || { mean:0, p50:0, p90:0, bins:[] };
+    const eu = f.energy_utilization || { mean:0, p50:0, p90:0 };
+    const sportBars = f.sport_contributions.map(s => {
+      const max = Math.max(...f.sport_contributions.map(x => x.meanPerRoster));
+      const w = max > 0 ? (s.meanPerRoster/max)*100 : 0;
+      return '<div class="mini-bar-row"><span class="label">' + esc(s.sport) + '</span><span class="bar"><span class="bar-fill" style="width:' + w + '%;"></span></span><span class="val">' + fmt(s.meanPerRoster) + '</span></div>';
+    }).join('');
+    const notes = (r.notes || []).map(n => '<li>' + esc(n) + '</li>').join('');
+    root.innerHTML = '' +
+      '<div class="card-block"><h3 style="margin:0 0 8px;">Headline metrics — fairness score: <span style="color:var(--accent);">' + fmt(f.fairness_score) + '</span></h3>' +
+      '<div class="tile-grid">' +
+        '<div class="tile"><div class="label">user count</div><div class="value">' + f.user_count.toLocaleString() + '</div><div class="sub">' + f.weeks_simulated + ' weeks</div></div>' +
+        '<div class="tile"><div class="label">top-1% / median</div><div class="value" style="color:' + ratioColor + ';">' + fmt(f.top1_to_median_ratio) + '×</div><div class="sub">target ~5×; ≥10× unfair</div></div>' +
+        '<div class="tile"><div class="label">rank stability</div><div class="value" style="color:' + stabColor + ';">' + fmt(f.rank_stability) + '</div><div class="sub">target &gt; 0.5</div></div>' +
+        '<div class="tile"><div class="label">competitive %</div><div class="value" style="color:' + compColor + ';">' + pct(f.competitive_pct) + '</div><div class="sub">top-half within 25% of #1</div></div>' +
+        '<div class="tile"><div class="label">total stddev</div><div class="value">' + fmt(f.total_stddev) + '</div><div class="sub">across rosters</div></div>' +
+        '<div class="tile"><div class="label">FA engagement</div><div class="value">' + pct(f.fa_engagement_pct) + '</div><div class="sub">≥30% target</div></div>' +
+      '</div></div>' +
+      '<div class="card-block"><h3 style="margin:0 0 6px;">Distribution of total roster scores</h3>' + bar(f.histogram.bins) +
+      '<div class="muted" style="font-size:11px;margin-top:4px;">range: ' + fmt(f.histogram.min) + ' – ' + fmt(f.histogram.max) + ' · 16 bins</div></div>' +
+      '<div class="card-block"><h3 style="margin:0 0 6px;">Card uplift per roster — mean ' + fmt(cu.mean) + ' · p50 ' + fmt(cu.p50) + ' · p90 ' + fmt(cu.p90) + '</h3>' + bar(cu.bins, '#a78bfa') +
+      '<div class="muted" style="font-size:11px;margin-top:4px;">range: ' + fmt(cu.min) + ' – ' + fmt(cu.max) + '</div></div>' +
+      '<div class="card-block"><h3 style="margin:0 0 6px;">Energy utilization (spent / available)</h3>' +
+        '<div class="kv"><span class="k">mean</span><span>' + pct((eu.mean||0)*100) + '</span></div>' +
+        '<div class="kv"><span class="k">p50</span><span>' + pct((eu.p50||0)*100) + '</span></div>' +
+        '<div class="kv"><span class="k">p90</span><span>' + pct((eu.p90||0)*100) + '</span></div>' +
+      '</div>' +
+      '<div class="card-block"><h3 style="margin:0 0 6px;">Per-sport contribution to roster scores</h3>' + sportBars +
+        '<table style="margin-top:8px;"><thead><tr><th>sport</th><th>mean per roster</th><th>top-1%</th></tr></thead><tbody>' + sportRows + '</tbody></table>' +
+      '</div>' +
+      '<div class="card-block"><h3 style="margin:0 0 6px;">Suggested adjustments</h3><ul style="margin:0;padding-left:18px;">' + adj + '</ul>' +
+        '<div style="margin-top:10px;"><a class="btn primary" href="/admin/edit/scoring">Open scoring editor</a></div>' +
+      '</div>' +
+      (notes ? '<div class="card-block"><h3 style="margin:0 0 6px;">Notes</h3><ul style="margin:0;padding-left:18px;color:var(--muted);">' + notes + '</ul></div>' : '');
+  }
+
+  let pollTimer = null;
+  async function poll(runId) {
+    const r = await fetchJson('/admin/api/simulate/' + encodeURIComponent(runId));
+    if (!r.ok) return;
+    const j = r.json;
+    const fill = document.getElementById('progressFill');
+    const note = document.getElementById('progressNote');
+    if (fill) fill.style.width = Math.round((j.progress||0)*100) + '%';
+    if (note) note.textContent = (j.progress_note || '') + ' (' + Math.round((j.progress||0)*100) + '%)';
+    if (j.status === 'completed') {
+      clearInterval(pollTimer); pollTimer = null;
+      document.getElementById('progress').style.display = 'none';
+      renderResults(j);
+    } else if (j.status === 'failed') {
+      clearInterval(pollTimer); pollTimer = null;
+      document.getElementById('progress').style.display = 'none';
+      document.getElementById('results').innerHTML = '<div class="card-block err">Run failed: ' + esc(j.error || 'unknown') + '</div>';
+    }
+  }
+
+  document.getElementById('run').addEventListener('click', async () => {
+    const status = document.getElementById('status');
+    const leagues = selectedLeagues();
+    if (leagues.length === 0) return showStatus(status, false, 'pick at least one league');
+    const seasons = Number(document.getElementById('seasons').value);
+    const userCount = Number(document.getElementById('users').value);
+    const cards = document.getElementById('cards').checked;
+    const fa = document.getElementById('fa').checked;
+    const r = await postJson('/admin/api/simulate', {
+      leagues, seasons, user_count: userCount,
+      disable_cards: !cards, disable_fa: !fa
+    });
+    if (!r.ok) return showStatus(status, false, r.json.error || 'failed to start');
+    showStatus(status, true, 'run ' + r.json.run_id.slice(0,8) + ' started');
+    document.getElementById('progress').style.display = '';
+    document.getElementById('results').innerHTML = '';
+    if (pollTimer) clearInterval(pollTimer);
+    pollTimer = setInterval(() => poll(r.json.run_id), 3000);
+    poll(r.json.run_id);
+  });
+
+  renderLeaguePicker();
 })();
 `;
