@@ -511,4 +511,35 @@ EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
 COMMENT ON TABLE user_safety_overrides IS 'Per-user overrides on top of the age-based safety matrix. Resolver: server/src/services/safetyResolver.ts. Editor: GET /admin/edit/safety (Per-User tab).';
 
+-- ============================================================================
+-- SECTION: COPPA email-plus parental consent (2026-05-01)
+-- ============================================================================
+-- One row per consent request. Created when a user under 13 signs up via
+-- the kid-safe SignUpScreen. The row sits with consent_received_at NULL
+-- until the parent clicks the confirmation token in the email-plus mailer
+-- (mailer integration is stubbed for v1 — see server/src/routes/auth.ts
+-- TODO). consent_token is generated server-side and embedded in the
+-- mailto link; parent_ip is captured on the consent landing page so we
+-- can satisfy COPPA's "verifiable parental consent" record-keeping.
+
+CREATE TABLE IF NOT EXISTS parental_consent_requests (
+  id                   UUID         DEFAULT gen_random_uuid() PRIMARY KEY,
+  user_id              UUID         NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+  parent_email         TEXT         NOT NULL,
+  child_age            INT          NOT NULL,
+  requested_at         TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+  consent_received_at  TIMESTAMPTZ,
+  consent_token        TEXT         UNIQUE,
+  parent_ip            TEXT
+);
+CREATE INDEX IF NOT EXISTS ix_pcr_user
+  ON parental_consent_requests(user_id);
+ALTER TABLE parental_consent_requests ENABLE ROW LEVEL SECURITY;
+DO $$ BEGIN
+  CREATE POLICY pcr_select_own ON parental_consent_requests
+    FOR SELECT USING (auth.uid() = user_id);
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+
+COMMENT ON TABLE parental_consent_requests IS 'COPPA email-plus consent requests. One row per minor signup. Mailer integration: server/src/routes/auth.ts (stubbed for v1).';
+
 COMMIT;
