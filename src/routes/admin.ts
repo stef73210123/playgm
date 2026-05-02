@@ -104,6 +104,9 @@ const ROUTE_PURPOSES: Record<string, string> = {
   'GET /admin/api/advertising': 'Advertising report (all channels)',
   'GET /admin/edit/safety': 'Per-age safety/feature matrix editor',
   'GET /admin/api/safety-matrix': 'Per-age safety/feature matrix (full)',
+  'GET /admin/edit/sfx': 'Sound-effects editor (upload, URL, preview, volume, reorder)',
+  'GET /admin/api/sfx': 'SFX manifest (categories, files, volume, enabled)',
+  'GET /admin/sfx-files/:filename': 'Audio file passthrough for editor previews',
   'GET /admin/docs/:slot': 'Serve admin docs (GDD, business plan, financial model)',
   'GET /admin/api/docs': 'Admin docs presence + slot metadata',
 };
@@ -489,6 +492,7 @@ const DASHBOARD_HTML = /* html */ `<!doctype html>
     <a href="/admin/edit/trivia"  style="color: var(--accent); text-decoration: none; margin: 0 4px;">Trivia</a>·
     <a href="/admin/edit/advertising" style="color: var(--accent); text-decoration: none; margin: 0 4px;">Advertising</a>·
     <a href="/admin/edit/safety" style="color: var(--accent); text-decoration: none; margin: 0 4px;">Safety matrix</a>·
+    <a href="/admin/edit/sfx" style="color: var(--accent); text-decoration: none; margin: 0 4px;">SFX</a>·
     <a href="/admin/edit/packs" style="color: var(--accent); text-decoration: none; margin: 0 4px;">Packs</a>·
     <a href="/admin/edit/earn-rates" style="color: var(--accent); text-decoration: none; margin: 0 4px;">Earn rates</a>·
     <a href="/admin/edit/subscriptions" style="color: var(--accent); text-decoration: none; margin: 0 4px;">Subscriptions</a>·
@@ -799,6 +803,11 @@ const DASHBOARD_HTML = /* html */ `<!doctype html>
         \${tileHtml('triggers', c.trigger_definitions)}
         \${tileHtml('stat-resolution sports', c.stat_resolution_sports)}
         \${tileHtml('city scenes', c.city_scenes)}
+        <a class="doc-tile" href="/admin/edit/sfx" style="text-decoration:none;">
+          <div class="label">sound effects</div>
+          <div class="value">\${esc(String(c.sfx_total ?? 0))}</div>
+          <div class="sub">\${esc(String(c.sfx_enabled ?? 0))} enabled · click to edit</div>
+        </a>
         \${tileHtml('teams', c.team_count)}
         \${tileHtml('NFL stat-cache players', c.nfl_players_in_stat_cache)}
         \${tileHtml('stat-tier files', c.stat_tier_files)}

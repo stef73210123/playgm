@@ -48,6 +48,8 @@ export interface DataCorpusReport {
   stat_tier_files: number;
   tier_levels: number;
   scout_voice_lines_seeded: number | null;
+  sfx_total: number;
+  sfx_enabled: number;
   notes?: string[];
 }
 
@@ -76,6 +78,7 @@ const FILE = {
   nflStatCache:  path.join(PROJECT_ROOT, 'assets', 'stat-cache', 'nfl_season_2025.json'),
   triviaDir:     path.join(PROJECT_ROOT, 'assets', 'challenges'),
   statTiersDir:  path.join(PROJECT_ROOT, 'assets', 'stat-tiers'),
+  sfxManifest:   path.join(PROJECT_ROOT, 'data', 'audio', 'pgm_sfx_manifest.json'),
 } as const;
 
 const TRIVIA_FILES = [
@@ -164,6 +167,12 @@ export async function getDataCorpus(opts: {
       : null;
   if (nflPlayers === null) notes.push('nfl_season_2025.json unreadable');
 
+  // SFX manifest — counts feed the dashboard tile ("12 sounds — 11 enabled").
+  const sfx = safeReadJson(FILE.sfxManifest) as { sfx?: Array<{ enabled?: boolean }> } | null;
+  const sfxList = Array.isArray(sfx?.sfx) ? sfx.sfx : [];
+  const sfxTotal = sfxList.length;
+  const sfxEnabled = sfxList.filter((s) => s && s.enabled !== false).length;
+
   const report: DataCorpusReport = {
     trivia_questions_total: triviaTotal,
     trivia_by_sport: triviaBySport,
@@ -177,6 +186,8 @@ export async function getDataCorpus(opts: {
     stat_tier_files: TIER_FILES.length,
     tier_levels: countTierLevels(),
     scout_voice_lines_seeded: opts.scoutVoiceLinesCount ?? null,
+    sfx_total: sfxTotal,
+    sfx_enabled: sfxEnabled,
     ...(notes.length ? { notes } : {}),
   };
 

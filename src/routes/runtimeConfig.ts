@@ -32,6 +32,8 @@ interface ConfigPayload {
     stat_resolution: unknown;
     card_templates: unknown;
     safety_matrix: unknown;
+    trade_rules: unknown;
+    sfx_manifest: unknown;
   };
 }
 
@@ -53,6 +55,8 @@ const SPEC_FILES = {
   stat_resolution: ['data', 'cards', 'pgm_stat_resolution.json'],
   card_templates: ['data', 'cards', 'pgm_card_templates.json'],
   safety_matrix: ['data', 'safety', 'age_feature_matrix.json'],
+  trade_rules: ['data', 'economy', 'pgm_trade_rules.json'],
+  sfx_manifest: ['data', 'audio', 'pgm_sfx_manifest.json'],
 } as const;
 
 async function buildPayload(): Promise<ConfigPayload> {

@@ -84,6 +84,8 @@ const SAFETY_MATRIX_PATH = path.join(
   'safety',
   'age_feature_matrix.json',
 );
+const SFX_MANIFEST_PATH = path.join(PROJECT_ROOT, 'data', 'audio', 'pgm_sfx_manifest.json');
+const SFX_FILES_DIR = path.join(PROJECT_ROOT, 'assets', 'sounds');
 
 // ─── Constants / validation tables ───────────────────────────────────────
 const RARITIES = ['common', 'uncommon', 'rare', 'epic', 'legendary'] as const;
@@ -105,12 +107,42 @@ const TRIVIA_CATEGORIES = [
 
 const MAX_URL_LEN = 600;
 
+// SFX (sound effects) — admin editor lives at /admin/edit/sfx; manifest is
+// streamed to clients via /api/config/v1 so toggles/volume changes flow
+// without an OTA JS push. Files saved under assets/sounds/ to stay
+// compatible with the existing soundManager.ts require() registry.
+const SFX_CATEGORIES = ['rewards', 'ui', 'gameplay', 'notifications', 'ambient'] as const;
+const SFX_AUDIO_EXTS = ['.mp3', '.m4a', '.wav', '.ogg'] as const;
+// 5 MB ceiling per SFX. Synthetic SFX are typically <50 KB; this catches
+// pathological uploads without blocking the rare ambient stinger.
+const MAX_SFX_BYTES = 5 * 1024 * 1024;
+
 type Rarity = (typeof RARITIES)[number];
 type CardType = (typeof CARD_TYPES)[number];
 type CardSport = (typeof CARD_SPORTS)[number];
 type TriviaSport = (typeof TRIVIA_SPORTS)[number];
 type TriviaDifficulty = (typeof TRIVIA_DIFFICULTIES)[number];
 type TriviaCategory = (typeof TRIVIA_CATEGORIES)[number];
+type SfxCategory = (typeof SFX_CATEGORIES)[number];
+
+interface SfxEntry {
+  id: string;
+  name: string;
+  category: SfxCategory;
+  /** Repo-relative path (POSIX), e.g. assets/sounds/foo.mp3. */
+  file: string;
+  /** Optional duration hint for the editor; not authoritative. */
+  duration_ms?: number;
+  /** 0..1 default playback volume — clients multiply against per-call volume. */
+  volume: number;
+  enabled: boolean;
+}
+
+interface SfxManifestFile {
+  version: string;
+  last_updated_iso: string;
+  sfx: SfxEntry[];
+}
 
 // ─── Types ───────────────────────────────────────────────────────────────
 interface CardTemplate {
@@ -484,6 +516,56 @@ export function autoCommit(relPath: string, subject: string): { ok: boolean; err
   return attempt;
 }
 
+// ─── SFX helpers ─────────────────────────────────────────────────────────
+// Only [a-z0-9_] survives — id becomes the on-disk filename stem, so we keep
+// it tight to avoid path-traversal surprises on the static-serve route below.
+export function sanitizeSfxId(id: string): string {
+  return id
+    .toLowerCase()
+    .replace(/[^a-z0-9_]/g, '_')
+    .replace(/_+/g, '_')
+    .replace(/^_+|_+$/g, '')
+    .slice(0, 64);
+}
+
+function extFromContentType(ct: string | null | undefined): string {
+  if (!ct) return '.mp3';
+  const c = ct.toLowerCase();
+  if (c.includes('mpeg') || c.includes('mp3')) return '.mp3';
+  if (c.includes('m4a') || c.includes('mp4')) return '.m4a';
+  if (c.includes('wav') || c.includes('x-wav')) return '.wav';
+  if (c.includes('ogg')) return '.ogg';
+  return '.mp3';
+}
+
+function audioContentType(file: string): string {
+  const e = path.extname(file).toLowerCase();
+  if (e === '.mp3') return 'audio/mpeg';
+  if (e === '.m4a') return 'audio/mp4';
+  if (e === '.wav') return 'audio/wav';
+  if (e === '.ogg') return 'audio/ogg';
+  return 'application/octet-stream';
+}
+
+async function readSfxManifest(): Promise<SfxManifestFile> {
+  try {
+    const raw = await fs.readFile(SFX_MANIFEST_PATH, 'utf8');
+    return JSON.parse(raw) as SfxManifestFile;
+  } catch (err) {
+    // First-boot fallback: empty manifest. Editor's "Add new SFX" still works.
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+      return { version: 'v1', last_updated_iso: new Date().toISOString(), sfx: [] };
+    }
+    throw err;
+  }
+}
+
+async function writeSfxManifest(m: SfxManifestFile): Promise<void> {
+  m.last_updated_iso = new Date().toISOString();
+  await fs.mkdir(path.dirname(SFX_MANIFEST_PATH), { recursive: true });
+  await fs.writeFile(SFX_MANIFEST_PATH, JSON.stringify(m, null, 2) + '\n', 'utf8');
+}
+
 // ─── Reply helpers ───────────────────────────────────────────────────────
 export function badRequest(reply: FastifyReply, errors: ValidationError[]): FastifyReply {
   reply.code(400).send({ ok: false, errors });
@@ -534,6 +616,10 @@ export async function adminEditRoutes(fastify: FastifyInstance): Promise<void> {
   fastify.get('/admin/edit/safety', async (_req, reply) => {
     reply.type('text/html; charset=utf-8');
     return renderSafetyPage();
+  });
+  fastify.get('/admin/edit/sfx', async (_req, reply) => {
+    reply.type('text/html; charset=utf-8');
+    return renderSfxPage();
   });
 
   // ═══ SAFETY MATRIX API ═══════════════════════════════════════════════════
@@ -1198,6 +1284,248 @@ export async function adminEditRoutes(fastify: FastifyInstance): Promise<void> {
     }
     return notFound(reply, `trivia ${id}`);
   });
+
+  // ═══ SFX EDITOR API ════════════════════════════════════════════════════
+  // The static-file passthrough below intentionally lives under /admin/ so
+  // it inherits whatever auth the rest of /admin/ has (currently none —
+  // tunnel-only). Same threat model as the JSON manifest endpoints.
+  fastify.get('/admin/sfx-files/:filename', async (req, reply) => {
+    const { filename } = req.params as { filename: string };
+    // Path-traversal hardening: alphanumerics, dot, underscore, hyphen only.
+    if (!/^[A-Za-z0-9._-]+$/.test(filename)) {
+      reply.code(400).send({ ok: false, error: 'invalid filename' });
+      return reply;
+    }
+    const abs = path.join(SFX_FILES_DIR, filename);
+    // Defense-in-depth: ensure resolved path is still inside SFX_FILES_DIR.
+    if (!abs.startsWith(SFX_FILES_DIR + path.sep)) {
+      reply.code(400).send({ ok: false, error: 'invalid filename' });
+      return reply;
+    }
+    try {
+      const buf = await fs.readFile(abs);
+      reply.type(audioContentType(filename));
+      // Editor preview must always reflect the latest file after a re-upload.
+      reply.header('cache-control', 'no-cache, must-revalidate');
+      return buf;
+    } catch {
+      return notFound(reply, `audio file ${filename}`);
+    }
+  });
+
+  fastify.get('/admin/api/sfx', async (_req, reply) => {
+    try {
+      const m = await readSfxManifest();
+      return { ok: true, ...m };
+    } catch (err) {
+      reply.code(500).send({
+        ok: false,
+        error: err instanceof Error ? err.message : 'failed to load sfx manifest',
+      });
+      return reply;
+    }
+  });
+
+  // Create-or-replace. Accepts JSON only (avoids conflicting with the raw
+  // multipart parser registered for /voice/stt). Client encodes the file as
+  // base64 in `file_data_base64`, OR passes `file_url` and the server
+  // downloads it. Same id replaces both the entry and the on-disk file.
+  fastify.post('/admin/api/sfx', async (req, reply) => {
+    const body = (req.body ?? {}) as {
+      id?: unknown;
+      name?: unknown;
+      category?: unknown;
+      volume?: unknown;
+      enabled?: unknown;
+      duration_ms?: unknown;
+      file_data_base64?: unknown;
+      file_ext?: unknown;
+      file_url?: unknown;
+    };
+
+    const errs: ValidationError[] = [];
+    const rawId = typeof body.id === 'string' ? body.id : '';
+    const id = sanitizeSfxId(rawId.trim());
+    if (!id) {
+      errs.push({ field: 'id', message: 'id required (alphanumeric + underscore)' });
+    }
+    const name = typeof body.name === 'string' ? body.name.trim() : '';
+    if (!name) errs.push({ field: 'name', message: 'name required' });
+    const category = body.category as SfxCategory;
+    if (!SFX_CATEGORIES.includes(category)) {
+      errs.push({
+        field: 'category',
+        message: `category must be one of ${SFX_CATEGORIES.join(', ')}`,
+      });
+    }
+    const volume = typeof body.volume === 'number' ? body.volume : 0.8;
+    if (volume < 0 || volume > 1) {
+      errs.push({ field: 'volume', message: 'volume must be between 0 and 1' });
+    }
+    const hasFile = typeof body.file_data_base64 === 'string' && body.file_data_base64.length > 0;
+    const hasUrl = typeof body.file_url === 'string' && body.file_url.length > 0;
+    if (!hasFile && !hasUrl) {
+      errs.push({ field: 'file', message: 'must provide file_data_base64 or file_url' });
+    }
+    if (errs.length) return badRequest(reply, errs);
+
+    // Resolve buffer + extension.
+    let buf: Buffer;
+    let ext = '.mp3';
+    try {
+      if (hasFile) {
+        buf = Buffer.from(body.file_data_base64 as string, 'base64');
+        const supplied = typeof body.file_ext === 'string' ? body.file_ext.toLowerCase() : '';
+        if ((SFX_AUDIO_EXTS as readonly string[]).includes(supplied)) ext = supplied;
+      } else {
+        const url = body.file_url as string;
+        if (!/^https?:\/\//i.test(url)) {
+          return badRequest(reply, [{ field: 'file_url', message: 'url must start with http(s)://' }]);
+        }
+        const res = await fetch(url);
+        if (!res.ok) {
+          return badRequest(reply, [
+            { field: 'file_url', message: `fetch returned ${res.status}` },
+          ]);
+        }
+        ext = extFromContentType(res.headers.get('content-type'));
+        // If the URL has a known audio extension, prefer it over content-type
+        // (some CDNs serve octet-stream).
+        const urlExt = path.extname(new URL(url).pathname).toLowerCase();
+        if ((SFX_AUDIO_EXTS as readonly string[]).includes(urlExt)) ext = urlExt;
+        buf = Buffer.from(await res.arrayBuffer());
+      }
+    } catch (err) {
+      return badRequest(reply, [
+        { field: 'file', message: err instanceof Error ? err.message : 'failed to read file' },
+      ]);
+    }
+    if (buf.byteLength === 0) {
+      return badRequest(reply, [{ field: 'file', message: 'empty file' }]);
+    }
+    if (buf.byteLength > MAX_SFX_BYTES) {
+      return badRequest(reply, [
+        {
+          field: 'file',
+          message: `file too large (${buf.byteLength} bytes; max ${MAX_SFX_BYTES})`,
+        },
+      ]);
+    }
+
+    const filename = id + ext;
+    await fs.mkdir(SFX_FILES_DIR, { recursive: true });
+    await fs.writeFile(path.join(SFX_FILES_DIR, filename), buf);
+    // Manifest stores POSIX-style path so it round-trips cleanly across
+    // platforms (the client never reads filesystem paths from this manifest
+    // — it's metadata for the bundled require()s).
+    const relFile = ['assets', 'sounds', filename].join('/');
+
+    const manifest = await readSfxManifest();
+    const existingIdx = manifest.sfx.findIndex((s) => s.id === id);
+    const entry: SfxEntry = {
+      id,
+      name,
+      category,
+      file: relFile,
+      volume,
+      enabled: body.enabled !== false, // default true on create
+      ...(typeof body.duration_ms === 'number' ? { duration_ms: body.duration_ms } : {}),
+    };
+    if (existingIdx >= 0) {
+      // Preserve duration_ms / enabled if the caller didn't pass them.
+      const cur = manifest.sfx[existingIdx]!;
+      entry.enabled = body.enabled !== undefined ? body.enabled !== false : cur.enabled;
+      if (entry.duration_ms === undefined && cur.duration_ms !== undefined) {
+        entry.duration_ms = cur.duration_ms;
+      }
+      manifest.sfx[existingIdx] = entry;
+    } else {
+      manifest.sfx.push(entry);
+    }
+    await writeSfxManifest(manifest);
+    const commit = autoCommit(
+      'data/audio/pgm_sfx_manifest.json',
+      `chore(content): ${existingIdx >= 0 ? 'replace' : 'add'} sfx ${id}`,
+    );
+    return { ok: true, item: entry, commit };
+  });
+
+  fastify.put('/admin/api/sfx/:id', async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const body = (req.body ?? {}) as {
+      name?: unknown;
+      category?: unknown;
+      volume?: unknown;
+      enabled?: unknown;
+      order?: unknown;
+    };
+    const manifest = await readSfxManifest();
+    const idx = manifest.sfx.findIndex((s) => s.id === id);
+    if (idx === -1) return notFound(reply, `sfx ${id}`);
+
+    const errs: ValidationError[] = [];
+    if (body.category !== undefined && !SFX_CATEGORIES.includes(body.category as SfxCategory)) {
+      errs.push({ field: 'category', message: `must be one of ${SFX_CATEGORIES.join(', ')}` });
+    }
+    if (body.volume !== undefined) {
+      if (typeof body.volume !== 'number' || body.volume < 0 || body.volume > 1) {
+        errs.push({ field: 'volume', message: '0..1' });
+      }
+    }
+    if (body.name !== undefined && typeof body.name !== 'string') {
+      errs.push({ field: 'name', message: 'must be string' });
+    }
+    if (body.enabled !== undefined && typeof body.enabled !== 'boolean') {
+      errs.push({ field: 'enabled', message: 'must be boolean' });
+    }
+    if (errs.length) return badRequest(reply, errs);
+
+    const cur = manifest.sfx[idx]!;
+    const merged: SfxEntry = {
+      ...cur,
+      ...(body.name !== undefined ? { name: (body.name as string).trim() } : {}),
+      ...(body.category !== undefined ? { category: body.category as SfxCategory } : {}),
+      ...(body.volume !== undefined ? { volume: body.volume as number } : {}),
+      ...(body.enabled !== undefined ? { enabled: body.enabled as boolean } : {}),
+    };
+    manifest.sfx[idx] = merged;
+
+    if (typeof body.order === 'number') {
+      const target = Math.max(0, Math.min(manifest.sfx.length - 1, Math.floor(body.order)));
+      manifest.sfx.splice(idx, 1);
+      manifest.sfx.splice(target, 0, merged);
+    }
+    await writeSfxManifest(manifest);
+    const commit = autoCommit(
+      'data/audio/pgm_sfx_manifest.json',
+      `chore(content): update sfx ${id}`,
+    );
+    return { ok: true, item: merged, commit };
+  });
+
+  fastify.delete('/admin/api/sfx/:id', async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const manifest = await readSfxManifest();
+    const idx = manifest.sfx.findIndex((s) => s.id === id);
+    if (idx === -1) return notFound(reply, `sfx ${id}`);
+    const removed = manifest.sfx.splice(idx, 1)[0]!;
+    await writeSfxManifest(manifest);
+    // Best-effort file delete — only inside SFX_FILES_DIR. Guards against
+    // a manifest entry whose path was hand-edited to point outside.
+    const filePath = path.join(PROJECT_ROOT, removed.file);
+    if (filePath.startsWith(SFX_FILES_DIR + path.sep)) {
+      try {
+        await fs.unlink(filePath);
+      } catch {
+        // file may already be gone — non-fatal.
+      }
+    }
+    const commit = autoCommit(
+      'data/audio/pgm_sfx_manifest.json',
+      `chore(content): delete sfx ${id}`,
+    );
+    return { ok: true, removed, commit };
+  });
 }
 
 // Shared helper: PATCH meta_json.video_*_url for players or teams.
@@ -1316,6 +1644,7 @@ export const SHARED_CRUMBS = /* html */ `
     <a href="/admin/edit/trivia">Trivia</a> ·
     <a href="/admin/edit/advertising">Advertising</a> ·
     <a href="/admin/edit/safety">Safety matrix</a> ·
+    <a href="/admin/edit/sfx">SFX</a> ·
     <a href="/admin/edit/packs">Packs</a> ·
     <a href="/admin/edit/earn-rates">Earn rates</a> ·
     <a href="/admin/edit/subscriptions">Subscriptions</a> ·
@@ -2356,3 +2685,361 @@ const SAFETY_JS = /* javascript */ `
   load();
 })();
 `;
+
+// ─── SFX editor page ─────────────────────────────────────────────────────
+function renderSfxPage(): string {
+  return /* html */ `<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8" /><meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>PlayGM Editor · Sound Effects</title>
+<style>${SHARED_STYLE}
+  audio { display: none; }
+  .preview-btn { font-size: 16px; padding: 4px 10px; line-height: 1; }
+  .vol-cell { white-space: nowrap; min-width: 150px; }
+  .vol-cell input[type=range] { width: 100px; vertical-align: middle; }
+  .vol-cell .vol-num { display: inline-block; min-width: 28px; color: var(--muted); font-variant-numeric: tabular-nums; margin-left: 6px; font-size: 11px; }
+  .toggle { cursor: pointer; }
+  .upload-cell { white-space: nowrap; }
+  .upload-cell input[type=file] { font-size: 11px; max-width: 160px; }
+  .upload-cell .url-row { margin-top: 4px; display: flex; gap: 4px; }
+  .upload-cell .url-row input { font-size: 11px; min-width: 140px; }
+  .row-actions { display: flex; gap: 4px; flex-wrap: wrap; }
+  .cat-tag { font-size: 11px; padding: 2px 8px; border-radius: 999px; }
+  .cat-tag.rewards       { background: rgba(250,204,21,.15);  color: var(--yellow); }
+  .cat-tag.ui            { background: rgba(108,212,255,.15); color: var(--accent); }
+  .cat-tag.gameplay      { background: rgba(74,222,128,.15);  color: var(--green); }
+  .cat-tag.notifications { background: rgba(167,139,250,.15); color: #a78bfa; }
+  .cat-tag.ambient       { background: rgba(107,114,128,.25); color: var(--muted); }
+  .add-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; align-items: start; }
+  .add-grid label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--muted); }
+  .add-grid input, .add-grid select { font-size: 13px; padding: 6px 8px; background: var(--card-2); color: var(--text); border: 1px solid var(--border); border-radius: 6px; }
+</style>
+</head><body>
+<div class="wrap">
+  <header>
+    <h1>Sound Effects</h1>
+    ${SHARED_CRUMBS}
+  </header>
+  <div class="muted" style="margin-bottom:10px;">
+    Source: <code>data/audio/pgm_sfx_manifest.json</code> · audio files in <code>assets/sounds/</code> ·
+    auto-commits on save (no push) · streamed to clients via <code>/api/config/v1</code>.
+  </div>
+  <div class="card-block">
+    <div class="toolbar">
+      <span class="muted" id="meta">loading…</span>
+      <button class="btn" id="reload">↻ Reload</button>
+    </div>
+    <table id="tbl">
+      <thead><tr>
+        <th style="width:34px;">▶</th>
+        <th>Name</th>
+        <th>ID</th>
+        <th>Category</th>
+        <th>Volume</th>
+        <th>Enabled</th>
+        <th>Replace file (upload or URL)</th>
+        <th>Actions</th>
+      </tr></thead>
+      <tbody></tbody>
+    </table>
+  </div>
+  <div class="card-block">
+    <details>
+      <summary>Add new SFX</summary>
+      <div style="margin-top:10px;">
+        <div class="add-grid">
+          <label>id (lowercase_alphanumeric)
+            <input id="n_id" placeholder="my_new_sound" />
+          </label>
+          <label>name
+            <input id="n_name" placeholder="My New Sound" />
+          </label>
+          <label>category
+            <select id="n_category">
+              <option value="ui">ui</option>
+              <option value="gameplay">gameplay</option>
+              <option value="rewards">rewards</option>
+              <option value="notifications">notifications</option>
+              <option value="ambient">ambient</option>
+            </select>
+          </label>
+          <label>volume
+            <input id="n_volume" type="range" min="0" max="1" step="0.1" value="0.8" />
+            <span class="muted" id="n_volume_num">0.8</span>
+          </label>
+          <label>upload file (.mp3 / .m4a / .wav / .ogg)
+            <input id="n_file" type="file" accept="audio/*" />
+          </label>
+          <label>OR fetch from URL
+            <input id="n_url" type="url" placeholder="https://example.com/sound.mp3" />
+          </label>
+        </div>
+        <div style="margin-top:10px; display:flex; gap:8px; align-items:center;">
+          <button class="btn primary" id="addBtn">Add SFX</button>
+          <span id="addStatus" class="hint"></span>
+        </div>
+      </div>
+    </details>
+  </div>
+</div>
+<script>${SFX_JS}</script>
+</body></html>`;
+}
+
+// Vanilla JS — no build step. Mirrors the trivia/cards editor pattern.
+const SFX_JS = /* javascript */ `
+(function(){
+  function el(id){ return document.getElementById(id); }
+  function esc(s){ s = String(s == null ? '' : s);
+    return s.replace(/[&<>"']/g, function(c){
+      return ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c];
+    });
+  }
+  var CATEGORIES = ['rewards','ui','gameplay','notifications','ambient'];
+  var manifest = null;
+
+  // Cache-bust audio src on every render so the preview reflects the latest
+  // file after an upload (the static route already sets no-cache, but some
+  // browsers will reuse the in-memory <audio> element).
+  function fileUrl(file){
+    var name = file.split('/').pop();
+    return '/admin/sfx-files/' + encodeURIComponent(name) + '?t=' + Date.now();
+  }
+
+  async function load(){
+    el('meta').textContent = 'loading…';
+    var res = await fetch('/admin/api/sfx');
+    var json = await res.json();
+    if (!res.ok || !json.ok) {
+      el('meta').innerHTML = '<span class="err">' + esc(json.error || 'load failed') + '</span>';
+      return;
+    }
+    manifest = json;
+    render();
+  }
+
+  function render(){
+    var rows = manifest.sfx.map(function(s, i){
+      var enabledAttr = s.enabled ? 'checked' : '';
+      var volNum = (typeof s.volume === 'number' ? s.volume : 0.8).toFixed(1);
+      var catOpts = CATEGORIES.map(function(c){
+        return '<option value="' + c + '"' + (s.category === c ? ' selected' : '') + '>' + c + '</option>';
+      }).join('');
+      var url = fileUrl(s.file);
+      return '' +
+        '<tr data-id="' + esc(s.id) + '">' +
+          '<td>' +
+            '<button class="btn preview-btn" title="Preview" data-act="preview">▶</button>' +
+            '<audio preload="none" src="' + esc(url) + '"></audio>' +
+          '</td>' +
+          '<td><input class="f-name" value="' + esc(s.name) + '" /></td>' +
+          '<td><code>' + esc(s.id) + '</code></td>' +
+          '<td>' +
+            '<select class="f-category">' + catOpts + '</select>' +
+            '<div class="hint"><span class="cat-tag ' + esc(s.category) + '">' + esc(s.category) + '</span></div>' +
+          '</td>' +
+          '<td class="vol-cell">' +
+            '<input class="f-volume" type="range" min="0" max="1" step="0.1" value="' + volNum + '" />' +
+            '<span class="vol-num">' + volNum + '</span>' +
+          '</td>' +
+          '<td><input class="f-enabled toggle" type="checkbox" ' + enabledAttr + ' /></td>' +
+          '<td class="upload-cell">' +
+            '<input class="f-file" type="file" accept="audio/*" />' +
+            '<div class="url-row">' +
+              '<input class="f-url" type="url" placeholder="…or paste a URL" />' +
+              '<button class="btn" data-act="urlReplace">Fetch</button>' +
+            '</div>' +
+            '<div class="hint">current: <code>' + esc(s.file) + '</code></div>' +
+          '</td>' +
+          '<td>' +
+            '<div class="row-actions">' +
+              '<button class="btn primary" data-act="save">Save</button>' +
+              '<button class="btn" data-act="up" '+ (i === 0 ? 'disabled' : '') +'>↑</button>' +
+              '<button class="btn" data-act="down" '+ (i === manifest.sfx.length - 1 ? 'disabled' : '') +'>↓</button>' +
+              '<button class="btn danger" data-act="delete">×</button>' +
+            '</div>' +
+            '<div class="row-status hint"></div>' +
+          '</td>' +
+        '</tr>';
+    }).join('');
+    document.querySelector('#tbl tbody').innerHTML = rows;
+    el('meta').textContent = manifest.sfx.length + ' SFX · ' +
+      manifest.sfx.filter(function(s){ return s.enabled; }).length + ' enabled · ' +
+      'updated ' + new Date(manifest.last_updated_iso).toLocaleString();
+    bindRowEvents();
+  }
+
+  function bindRowEvents(){
+    document.querySelectorAll('#tbl tbody tr').forEach(function(tr){
+      // Live volume number readout.
+      var range = tr.querySelector('.f-volume');
+      var num = tr.querySelector('.vol-num');
+      range.addEventListener('input', function(){ num.textContent = (+range.value).toFixed(1); });
+
+      tr.querySelectorAll('button[data-act]').forEach(function(b){
+        b.addEventListener('click', function(){ onAction(tr, b.dataset.act); });
+      });
+    });
+  }
+
+  function fileToBase64(file){
+    return new Promise(function(resolve, reject){
+      var reader = new FileReader();
+      reader.onload = function(){
+        var s = String(reader.result || '');
+        var i = s.indexOf(',');
+        resolve(i >= 0 ? s.slice(i + 1) : s);
+      };
+      reader.onerror = function(){ reject(reader.error); };
+      reader.readAsDataURL(file);
+    });
+  }
+
+  async function onAction(tr, act){
+    var id = tr.dataset.id;
+    var status = tr.querySelector('.row-status');
+    var setStatus = function(html){ status.innerHTML = html; };
+
+    if (act === 'preview') {
+      var audio = tr.querySelector('audio');
+      try { audio.currentTime = 0; audio.play(); }
+      catch(e){ setStatus('<span class="err">' + esc(String(e && e.message || e)) + '</span>'); }
+      return;
+    }
+    if (act === 'delete') {
+      if (!confirm('Delete SFX "' + id + '" and remove its audio file? This cannot be undone.')) return;
+      setStatus('deleting…');
+      var res = await fetch('/admin/api/sfx/' + encodeURIComponent(id), { method: 'DELETE' });
+      var json = await res.json();
+      if (!res.ok || !json.ok) { setStatus('<span class="err">' + esc(json.error || 'error') + '</span>'); return; }
+      await load();
+      return;
+    }
+    if (act === 'up' || act === 'down') {
+      var idx = manifest.sfx.findIndex(function(s){ return s.id === id; });
+      var target = act === 'up' ? idx - 1 : idx + 1;
+      if (target < 0 || target >= manifest.sfx.length) return;
+      setStatus('reordering…');
+      var res = await fetch('/admin/api/sfx/' + encodeURIComponent(id), {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ order: target }),
+      });
+      var json = await res.json();
+      if (!res.ok || !json.ok) { setStatus('<span class="err">' + esc(json.error || 'error') + '</span>'); return; }
+      await load();
+      return;
+    }
+    if (act === 'urlReplace') {
+      var url = (tr.querySelector('.f-url').value || '').trim();
+      if (!url) { setStatus('<span class="err">paste a URL first</span>'); return; }
+      var nameVal = (tr.querySelector('.f-name').value || '').trim();
+      var catVal = tr.querySelector('.f-category').value;
+      var volVal = parseFloat(tr.querySelector('.f-volume').value);
+      var enabledVal = tr.querySelector('.f-enabled').checked;
+      setStatus('downloading…');
+      var res = await fetch('/admin/api/sfx', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: id, name: nameVal, category: catVal, volume: volVal, enabled: enabledVal, file_url: url }),
+      });
+      var json = await res.json();
+      if (!res.ok || !json.ok) {
+        var msg = json.errors ? json.errors.map(function(e){ return e.field + ': ' + e.message; }).join(', ') : (json.error || 'error');
+        setStatus('<span class="err">' + esc(msg) + '</span>');
+        return;
+      }
+      setStatus('<span class="ok">replaced from URL</span>');
+      setTimeout(load, 600);
+      return;
+    }
+    if (act === 'save') {
+      var nameVal = (tr.querySelector('.f-name').value || '').trim();
+      var catVal = tr.querySelector('.f-category').value;
+      var volVal = parseFloat(tr.querySelector('.f-volume').value);
+      var enabledVal = tr.querySelector('.f-enabled').checked;
+      var fileInput = tr.querySelector('.f-file');
+      var file = fileInput.files && fileInput.files[0];
+
+      // If a file is attached we POST (replace); otherwise PUT (metadata-only).
+      if (file) {
+        setStatus('uploading…');
+        var b64 = await fileToBase64(file);
+        var ext = (file.name.match(/\\.[^.]+$/) || ['.mp3'])[0].toLowerCase();
+        var res = await fetch('/admin/api/sfx', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            id: id, name: nameVal, category: catVal, volume: volVal, enabled: enabledVal,
+            file_data_base64: b64, file_ext: ext,
+          }),
+        });
+        var json = await res.json();
+        if (!res.ok || !json.ok) {
+          var msg = json.errors ? json.errors.map(function(e){ return e.field + ': ' + e.message; }).join(', ') : (json.error || 'error');
+          setStatus('<span class="err">' + esc(msg) + '</span>');
+          return;
+        }
+        setStatus('<span class="ok">saved + file replaced</span>');
+        setTimeout(load, 600);
+      } else {
+        setStatus('saving…');
+        var res = await fetch('/admin/api/sfx/' + encodeURIComponent(id), {
+          method: 'PUT', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: nameVal, category: catVal, volume: volVal, enabled: enabledVal }),
+        });
+        var json = await res.json();
+        if (!res.ok || !json.ok) {
+          var msg = json.errors ? json.errors.map(function(e){ return e.field + ': ' + e.message; }).join(', ') : (json.error || 'error');
+          setStatus('<span class="err">' + esc(msg) + '</span>');
+          return;
+        }
+        setStatus('<span class="ok">saved</span>');
+        setTimeout(function(){ status.textContent = ''; }, 1500);
+      }
+    }
+  }
+
+  // ─── Add new SFX ────────────────────────────────────────────────────────
+  el('n_volume').addEventListener('input', function(){
+    el('n_volume_num').textContent = (+el('n_volume').value).toFixed(1);
+  });
+  el('addBtn').addEventListener('click', async function(){
+    var status = el('addStatus');
+    var id = (el('n_id').value || '').trim();
+    var name = (el('n_name').value || '').trim();
+    var cat = el('n_category').value;
+    var vol = parseFloat(el('n_volume').value);
+    var fileInput = el('n_file');
+    var url = (el('n_url').value || '').trim();
+    var file = fileInput.files && fileInput.files[0];
+
+    if (!id || !name) { status.innerHTML = '<span class="err">id and name required</span>'; return; }
+    if (!file && !url) { status.innerHTML = '<span class="err">attach a file OR paste a URL</span>'; return; }
+
+    status.textContent = file ? 'uploading…' : 'downloading…';
+    var payload = { id: id, name: name, category: cat, volume: vol, enabled: true };
+    if (file) {
+      payload.file_data_base64 = await fileToBase64(file);
+      payload.file_ext = (file.name.match(/\\.[^.]+$/) || ['.mp3'])[0].toLowerCase();
+    } else {
+      payload.file_url = url;
+    }
+    var res = await fetch('/admin/api/sfx', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    var json = await res.json();
+    if (!res.ok || !json.ok) {
+      var msg = json.errors ? json.errors.map(function(e){ return e.field + ': ' + e.message; }).join(', ') : (json.error || 'error');
+      status.innerHTML = '<span class="err">' + esc(msg) + '</span>';
+      return;
+    }
+    status.innerHTML = '<span class="ok">added</span>';
+    el('n_id').value = ''; el('n_name').value = ''; el('n_url').value = ''; fileInput.value = '';
+    setTimeout(load, 500);
+  });
+
+  el('reload').addEventListener('click', load);
+
+  load();
+})();
+`;
+
