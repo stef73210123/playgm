@@ -3,14 +3,14 @@
  *
  *   GET /players/:id/rating
  *     Look up player by external_id ('espn:1234') across the per-league
- *     caches and compute a tier rating.
+ *     caches and compute a 13-grade rating (A+ … F).
  *
  *   GET /admin/ratings/distribution
- *     Per-league histogram of overall_tier counts. Used by the admin
- *     dashboard's "Rating Distribution" mini-chart.
+ *     Per-league histogram of overall_grade counts. Used by the admin
+ *     dashboard's "Rating Distribution" 13-bar chart.
  */
 import type { FastifyInstance } from 'fastify';
-import { computeRating, type TierName } from '../services/ratings/computeRatings.js';
+import { computeRating, type Grade, GRADE_ORDER } from '../services/ratings/computeRatings.js';
 import {
   findPlayer,
   getAllPlayers,
@@ -20,7 +20,13 @@ import {
 } from '../services/ratings/cacheLookup.js';
 import type { League } from '../services/stats/types.js';
 
-const TIERS: TierName[] = ['elite', 'strong', 'solid', 'role', 'deep_bench'];
+const GRADES: Grade[] = GRADE_ORDER;
+
+function emptyDist(): Record<Grade, number> {
+  const out = {} as Record<Grade, number>;
+  for (const g of GRADE_ORDER) out[g] = 0;
+  return out;
+}
 
 export async function playersRoutes(fastify: FastifyInstance): Promise<void> {
   fastify.get<{ Params: { id: string } }>('/players/:id/rating', async (req, reply) => {
@@ -37,15 +43,30 @@ export async function playersRoutes(fastify: FastifyInstance): Promise<void> {
     // is the freshest source once the refreshStats job is dual-writing.
     const supaRating = await getPlayerRating(id, found.league);
     if (supaRating) {
-      const breakdowns = (supaRating.breakdowns_json as { stat_breakdowns?: unknown[] } | null)
-        ?.stat_breakdowns;
+      const breakdowns_json = supaRating.breakdowns_json as
+        | {
+            stat_breakdowns?: unknown[];
+            score?: number;
+            confidence?: number;
+            secondary_grade?: unknown;
+            alternate_rating?: unknown;
+            position?: string;
+          }
+        | null;
+      const breakdowns = breakdowns_json?.stat_breakdowns;
+      // Accept either column name from the DB row — overall_grade is the
+      // post-rename column; overall_tier handles legacy rows that haven't
+      // been recomputed yet (mapped 5-tier name → grade letter).
+      const grade = (supaRating.overall_grade ?? supaRating.overall_tier) as Grade;
       return {
         player_id: supaRating.player_id,
         sport: supaRating.sport,
-        position: found.player.position_group,
-        overall_tier: supaRating.overall_tier as TierName,
+        position: breakdowns_json?.position ?? found.player.position_group,
+        overall_grade: grade,
         stat_breakdowns: Array.isArray(breakdowns) ? breakdowns : [],
-        score: 0,
+        score: typeof breakdowns_json?.score === 'number' ? breakdowns_json.score : 0,
+        confidence: typeof breakdowns_json?.confidence === 'number' ? breakdowns_json.confidence : 0,
+        ...(breakdowns_json?.secondary_grade ? { secondary_grade: breakdowns_json.secondary_grade } : {}),
         source: 'supabase-player-ratings',
       };
     }
@@ -71,20 +92,20 @@ export async function playersRoutes(fastify: FastifyInstance): Promise<void> {
     }
     return {
       ...result,
-      source: supaStats ? 'supabase-stats+computed' : (result.source ?? 'tier-files-v1'),
+      source: supaStats ? 'supabase-stats+computed' : (result.source ?? 'tier-files-v2'),
     };
   });
 
   fastify.get('/admin/ratings/distribution', async () => {
     const leagues: League[] = ['nfl', 'nba', 'mlb', 'nhl', 'mls'];
-    const out: Record<string, Record<TierName, number>> = {};
+    const out: Record<string, Record<Grade, number>> = {};
     for (const league of leagues) {
       const c = getAllPlayers(league);
       if (!c) {
-        out[league] = { elite: 0, strong: 0, solid: 0, role: 0, deep_bench: 0 };
+        out[league] = emptyDist();
         continue;
       }
-      const dist: Record<TierName, number> = { elite: 0, strong: 0, solid: 0, role: 0, deep_bench: 0 };
+      const dist = emptyDist();
       for (const p of c.players) {
         const r = computeRating({
           playerId: p.external_id,
@@ -92,13 +113,13 @@ export async function playersRoutes(fastify: FastifyInstance): Promise<void> {
           position: p.position_group,
           stats: p.stats,
         });
-        if (r) dist[r.overall_tier] = (dist[r.overall_tier] ?? 0) + 1;
+        if (r) dist[r.overall_grade] = (dist[r.overall_grade] ?? 0) + 1;
       }
       out[league] = dist;
     }
     return {
       generated_at: new Date().toISOString(),
-      tiers: TIERS,
+      grades: GRADES,
       distribution: out,
       totals: getCacheCounts(),
     };

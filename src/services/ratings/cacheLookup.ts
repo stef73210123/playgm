@@ -113,7 +113,12 @@ export interface SupabasePlayerRating {
   player_id: string;
   sport: League;
   season: string;
-  overall_tier: string;
+  /** v2 13-grade letter (A+, A, … F). After the rename migration runs, the
+   *  underlying column is `overall_grade`; v1 rows that haven't been
+   *  recomputed yet still carry the old 5-tier name in `overall_tier`. */
+  overall_grade: string;
+  /** @deprecated v1 column name — kept on the type so legacy reads still work. */
+  overall_tier?: string;
   breakdowns_json: unknown;
   computed_at: string;
 }
