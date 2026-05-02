@@ -1323,7 +1323,8 @@ export const SHARED_CRUMBS = /* html */ `
     <a href="/admin/edit/triggers">Triggers</a> ·
     <a href="/admin/edit/stat-resolution">Stat resolution</a> ·
     <a href="/admin/edit/pity">Pity</a> ·
-    <a href="/admin/edit/progression">Progression</a>
+    <a href="/admin/edit/progression">Progression</a> ·
+    <a href="/admin/edit/scoring">Scoring</a>
   </nav>
 `;
 
