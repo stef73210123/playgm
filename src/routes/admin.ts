@@ -33,6 +33,7 @@ import { getEconomicMetrics } from '../services/economicMetrics.js';
 import { getEconomicTargets } from '../services/economicTargets.js';
 import { getAdvertisingReport } from '../services/advertising.js';
 import { getDataPipelinesStatus } from '../jobs/refreshStats.js';
+import { getHighlightsCoverage } from '../services/highlightsCoverage.js';
 import {
   getSafetyMatrixSummary,
   loadSafetyMatrix,
@@ -279,6 +280,10 @@ export async function adminRoutes(fastify: FastifyInstance): Promise<void> {
     };
   });
 
+  fastify.get('/admin/api/highlights-coverage', async () => {
+    return await getHighlightsCoverage();
+  });
+
   fastify.get('/admin/dashboard', async (_req, reply) => {
     reply.type('text/html; charset=utf-8');
     return DASHBOARD_HTML;
@@ -506,6 +511,10 @@ const DASHBOARD_HTML = /* html */ `<!doctype html>
     <h2>Per-League Refresh Status</h2>
     <div id="data-pipelines-body">Loading…</div>
   </div>
+  <div class="card" id="highlights-coverage-card">
+    <h2>Highlights (TheSportsDB)</h2>
+    <div id="highlights-coverage-body">Loading…</div>
+  </div>
   <div class="card" id="ratings-distribution-card">
     <h2>Rating Distribution</h2>
     <div id="ratings-distribution-body">Loading…</div>
@@ -710,6 +719,9 @@ const DASHBOARD_HTML = /* html */ `<!doctype html>
 
     // ─── Data Pipelines (live ingestion) ─────────────────────────────────
     renderDataPipelines(s.data_pipelines || {});
+
+    // ─── Highlights coverage (TheSportsDB premium pull) ──────────────────
+    renderHighlightsCoverage();
 
     // Routes
     const routes = s.internal_routes || [];
@@ -1194,20 +1206,30 @@ const DASHBOARD_HTML = /* html */ `<!doctype html>
     // Lazy-load /admin/ratings/distribution for the histogram below.
     fetch('/admin/ratings/distribution').then(r => r.json()).then(data => {
       const dist = data.distribution || {};
-      const tiers = data.tiers || ['elite','strong','solid','role','deep_bench'];
-      const bg = { elite: '#D4AF37', strong: '#3B82F6', solid: '#10B981', role: '#9CA3AF', deep_bench: '#6B7280' };
-      let html = '<div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(180px, 1fr));gap:10px;">';
+      // 13-grade ladder. Falls back to v1 5-tier names if the API hasn't
+      // been redeployed yet — drawing 5 bars instead of 13 in that window.
+      const grades = data.grades || data.tiers || ['A+','A','A-','B+','B','B-','C+','C','C-','D+','D','D-','F'];
+      const bg = {
+        'A+': '#F97316', 'A':  '#FBBF24', 'A-': '#FCD34D',
+        'B+': '#3B82F6', 'B':  '#60A5FA', 'B-': '#93C5FD',
+        'C+': '#10B981', 'C':  '#34D399', 'C-': '#6EE7B7',
+        'D+': '#FB923C', 'D':  '#F97316', 'D-': '#EA580C',
+        'F':  '#DC2626',
+        // legacy 5-tier names — kept so the dashboard renders during the migration window.
+        elite: '#FBBF24', strong: '#3B82F6', solid: '#10B981', role: '#FB923C', deep_bench: '#DC2626',
+      };
+      let html = '<div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(220px, 1fr));gap:10px;">';
       for (const L of leagues) {
         const d = dist[L] || {};
-        const total = tiers.reduce((s, t) => s + (d[t] || 0), 0);
-        const max = Math.max(1, ...tiers.map(t => d[t] || 0));
-        const bars = tiers.map(t => {
-          const v = d[t] || 0;
+        const total = grades.reduce((s, g) => s + (d[g] || 0), 0);
+        const max = Math.max(1, ...grades.map(g => d[g] || 0));
+        const bars = grades.map(g => {
+          const v = d[g] || 0;
           const pct = (v / max) * 100;
-          return '<div style="margin:2px 0;display:flex;align-items:center;gap:6px;">' +
-            '<span style="width:64px;font-size:10px;color:var(--muted);text-transform:uppercase;">' + esc(t.replace('_',' ')) + '</span>' +
-            '<div style="flex:1;background:var(--bg);height:14px;border-radius:3px;overflow:hidden;">' +
-              '<div style="height:100%;background:' + bg[t] + ';width:' + pct + '%;"></div>' +
+          return '<div style="margin:1px 0;display:flex;align-items:center;gap:6px;">' +
+            '<span style="width:32px;font-size:10px;font-weight:700;color:var(--muted);">' + esc(String(g).replace('_',' ')) + '</span>' +
+            '<div style="flex:1;background:var(--bg);height:12px;border-radius:3px;overflow:hidden;">' +
+              '<div style="height:100%;background:' + (bg[g] || '#9CA3AF') + ';width:' + pct + '%;"></div>' +
             '</div>' +
             '<span style="width:36px;text-align:right;font-size:11px;">' + v + '</span>' +
           '</div>';
@@ -1222,6 +1244,55 @@ const DASHBOARD_HTML = /* html */ `<!doctype html>
     }).catch(() => {
       el('ratings-distribution-body').innerHTML = '<span class="tag unmeasured">distribution endpoint failed</span>';
     });
+  }
+
+  function renderHighlightsCoverage() {
+    fetch('/admin/api/highlights-coverage', { cache: 'no-store' })
+      .then(r => r.json())
+      .then(d => {
+        const fmtPct = v => (v == null ? '—' : (v * 100).toFixed(0) + '%');
+        const t = d.totals || {};
+        const emb = d.embeddability || { enabled: false, hit_rate: null, quota: { units_24h: 0, daily_budget: 10000, utilization: 0, cache_size: 0 } };
+        const rows = (d.by_league || []).map(r => {
+          const ppct = r.players_total ? (r.players_with / r.players_total) : 0;
+          const tpct = r.teams_total ? (r.teams_with / r.teams_total) : 0;
+          const last = r.last_pulled_at ? '<code>' + esc(r.last_pulled_at.slice(0,10)) + '</code>' : '<span class="tag unmeasured">never</span>';
+          // Avg playlist length per league — show "—" when null so the
+          // dashboard reads honestly while the first cron is still running.
+          const apP = r.avg_playlist_length_players != null ? r.avg_playlist_length_players.toFixed(2) : '—';
+          const apT = r.avg_playlist_length_teams != null ? r.avg_playlist_length_teams.toFixed(2) : '—';
+          return '<tr>' +
+            '<td><strong>' + esc(r.league) + '</strong></td>' +
+            '<td>' + esc(String(r.players_with ?? '?')) + ' / ' + esc(String(r.players_total ?? '?')) + ' <span class="muted">(' + fmtPct(ppct) + ')</span></td>' +
+            '<td>' + esc(String(r.teams_with ?? '?')) + ' / ' + esc(String(r.teams_total ?? '?')) + ' <span class="muted">(' + fmtPct(tpct) + ')</span></td>' +
+            '<td><span class="muted">P:</span>' + esc(apP) + ' · <span class="muted">T:</span>' + esc(apT) + '</td>' +
+            '<td>' + last + '</td>' +
+            '<td><a href="/admin/edit/players?missing_highlight=1&sport=' + esc(r.category) + '">missing →</a></td>' +
+          '</tr>';
+        }).join('');
+        const pipe = d.pipeline || {};
+        const lastRun = pipe.last_run_at ? '<code>' + esc(new Date(pipe.last_run_at).toLocaleString()) + '</code> · <span class="muted">' + esc(relTime(pipe.last_run_at)) + '</span>' : '<span class="tag unmeasured">never</span>';
+        const lastSucc = pipe.last_success_at ? '<code>' + esc(new Date(pipe.last_success_at).toLocaleString()) + '</code>' : '<span class="tag unmeasured">never</span>';
+        const apOverall = (typeof t.avg_playlist_length === 'number' ? t.avg_playlist_length.toFixed(2) : '—');
+        const hitRate = emb.hit_rate != null ? fmtPct(emb.hit_rate) : '<span class="tag unmeasured">no run yet</span>';
+        const embStatus = emb.enabled
+          ? '<span class="tag ok">YouTube API key configured</span>'
+          : '<span class="tag unmeasured">YOUTUBE_API_KEY missing — filter degraded</span>';
+        const quota = emb.quota || { units_24h: 0, daily_budget: 10000, utilization: 0, cache_size: 0 };
+        const quotaPct = (quota.utilization * 100).toFixed(1);
+        el('highlights-coverage-body').innerHTML =
+          '<div class="muted" style="margin-bottom:6px;">cron: <code>0 5 * * *</code> ET · last run: ' + lastRun + ' · last success: ' + lastSucc + '</div>' +
+          '<div class="kv"><span class="k">Players covered</span><span><strong>' + esc(String(t.players_with || 0)) + '</strong> / ' + esc(String(t.players_total || 0)) + ' <span class="muted">(' + fmtPct(t.players_pct) + ')</span></span></div>' +
+          '<div class="kv"><span class="k">Teams covered</span><span><strong>' + esc(String(t.teams_with || 0)) + '</strong> / ' + esc(String(t.teams_total || 0)) + ' <span class="muted">(' + fmtPct(t.teams_pct) + ')</span></span></div>' +
+          '<div class="kv"><span class="k">Avg playlist length</span><span><strong>' + esc(apOverall) + '</strong> <span class="muted">/ 5 max</span></span></div>' +
+          '<div class="kv"><span class="k">Embeddability hit rate</span><span><strong>' + hitRate + '</strong></span></div>' +
+          '<div class="kv"><span class="k">Embeddability filter</span><span>' + embStatus + '</span></div>' +
+          '<div class="kv"><span class="k">YouTube quota (24h)</span><span><strong>' + esc(String(quota.units_24h)) + '</strong> / ' + esc(String(quota.daily_budget)) + ' units <span class="muted">(' + esc(quotaPct) + '% used · ' + esc(String(quota.cache_size)) + ' cached)</span></span></div>' +
+          '<table style="margin-top:10px;"><thead><tr><th>League</th><th>Players</th><th>Teams</th><th>Avg Playlist</th><th>Last Pulled</th><th></th></tr></thead><tbody>' + rows + '</tbody></table>';
+      })
+      .catch(err => {
+        el('highlights-coverage-body').innerHTML = '<div class="err-banner">' + esc(err.message || 'fetch failed') + '</div>';
+      });
   }
 
   function formatUptime(s) {
