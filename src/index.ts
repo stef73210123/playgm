@@ -37,7 +37,14 @@ import { startHighlightsCron } from './jobs/highlightsCron.js';
 const PORT = Number(process.env.PORT ?? 3001);
 const HOST = '0.0.0.0';
 
+// Body limit: 25 MB safety net for /cards/scan (iPhone camera photos run
+// 3-8 MB raw → ~10 MB base64-encoded). The CLIENT now resizes+compresses to
+// well under 1 MB before upload (see CardScannerScreen.tsx), so this ceiling
+// only catches edge cases like older devices, RAW captures, or callers that
+// skip the manipulator pipeline. Default Fastify limit is 1 MB, which is what
+// produced the FST_ERR_CTP_BODY_TOO_LARGE 413 the user hit.
 const server = Fastify({
+  bodyLimit: 25 * 1024 * 1024,
   logger: {
     level: process.env.NODE_ENV === 'production' ? 'info' : 'debug',
     transport:

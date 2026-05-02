@@ -139,8 +139,12 @@ interface DailyCapErrorEnvelope {
   };
 }
 
-// 5MB raw — base64 expands ~33% so ~6.7MB encoded.
-const MAX_BASE64_BYTES = Math.ceil((5 * 1024 * 1024) * 4 / 3);
+// 15 MB raw — base64 expands ~33% so ~20 MB encoded. The client now resizes
+// to ≤1600px / JPEG q0.7 so typical uploads land at 0.4-1 MB, but we keep
+// headroom here for older iPhone HEIC→JPEG conversions, RAW captures, and
+// any caller that skips the manipulator pipeline. Pairs with the 25 MB
+// Fastify bodyLimit in server/src/index.ts.
+const MAX_BASE64_BYTES = Math.ceil((15 * 1024 * 1024) * 4 / 3);
 
 const ALLOWED_MEDIA_TYPES = new Set([
   'image/jpeg', 'image/png', 'image/webp', 'image/gif',
