@@ -88,6 +88,93 @@ export function getAllPlayers(league: League): { players: PlayerCacheEntry[] } |
   return { players: c.players };
 }
 
+// ─── Name-keyed lookups (for clients that only carry SportsDB IDs) ──────────
+//
+// The mobile client routes through TheSportsDB for roster discovery and only
+// has SportsDB IDs for players, while our stat caches are keyed on ESPN
+// external_ids. The fallback path below normalizes a player's name + team
+// into a stable key so the client can still pull stats / ratings.
+
+function normalizeName(s: string | null | undefined): string {
+  if (!s) return '';
+  return s
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '')   // strip diacritics
+    .replace(/[.,'’"`-]/g, '')         // strip punctuation
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function normalizeTeam(s: string | null | undefined): string {
+  if (!s) return '';
+  return s.toLowerCase().replace(/\s+/g, ' ').trim();
+}
+
+// Build name-keyed indexes once per cache load. Cache the index alongside the
+// cache mtime so we don't rebuild on every request.
+interface NameIndex {
+  byNameTeam: Map<string, PlayerCacheEntry & { _league: League }>;
+  byName: Map<string, Array<PlayerCacheEntry & { _league: League }>>;
+}
+const nameIndexes: Partial<Record<League, { mtime: number; idx: NameIndex }>> = {};
+
+function buildNameIndex(league: League): NameIndex | null {
+  const cached = loaded[league];
+  const indexed = nameIndexes[league];
+  if (!cached) return null;
+  if (indexed && indexed.mtime === cached.mtime) return indexed.idx;
+
+  const idx: NameIndex = { byNameTeam: new Map(), byName: new Map() };
+  for (const p of cached.data.players) {
+    const enriched = { ...p, _league: league };
+    const k1 = `${normalizeName(p.full_name)}::${normalizeTeam(p.team)}`;
+    idx.byNameTeam.set(k1, enriched);
+    const k2 = normalizeName(p.full_name);
+    if (!idx.byName.has(k2)) idx.byName.set(k2, []);
+    idx.byName.get(k2)!.push(enriched);
+  }
+  nameIndexes[league] = { mtime: cached.mtime, idx };
+  return idx;
+}
+
+/** Find a player by full name + (optional) team across all caches. */
+export function findPlayerByName(
+  fullName: string,
+  team?: string,
+): CacheLookup | null {
+  const n = normalizeName(fullName);
+  const t = normalizeTeam(team);
+  if (!n) return null;
+  for (const league of Object.keys(CACHE_FILES) as League[]) {
+    if (!loadCache(league)) continue;
+    const idx = buildNameIndex(league);
+    if (!idx) continue;
+    if (t) {
+      const hit = idx.byNameTeam.get(`${n}::${t}`);
+      if (hit) return { league, player: hit };
+    }
+    const arr = idx.byName.get(n);
+    if (arr && arr.length > 0) return { league, player: arr[0] };
+  }
+  return null;
+}
+
+/** All players on a single team across all caches (case-insensitive). */
+export function findPlayersByTeam(team: string): CacheLookup[] {
+  const t = normalizeTeam(team);
+  if (!t) return [];
+  const out: CacheLookup[] = [];
+  for (const league of Object.keys(CACHE_FILES) as League[]) {
+    const c = loadCache(league);
+    if (!c) continue;
+    for (const p of c.players) {
+      if (normalizeTeam(p.team) === t) out.push({ league, player: p });
+    }
+  }
+  return out;
+}
+
 export function clearCacheLookups(): void {
   for (const k of Object.keys(loaded) as League[]) {
     delete loaded[k];

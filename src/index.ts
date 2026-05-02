@@ -29,8 +29,11 @@ import { adminEditConfigRoutes } from './routes/adminEditConfig.js';
 import { adminSimulationRoutes } from './routes/adminSimulation.js';
 import { runtimeConfigRoutes } from './routes/runtimeConfig.js';
 import { playersRoutes } from './routes/players.js';
+import { statLineRoutes } from './routes/statLines.js';
+import { scheduleRoutes, startScheduleRefreshJobs } from './routes/schedule.js';
 import { authRoutes } from './routes/auth.js';
 import { meRoutes } from './routes/me.js';
+import { tradeRoutes } from './routes/trade.js';
 import { startStatsRefreshJobs } from './jobs/refreshStats.js';
 import { startHighlightsCron } from './jobs/highlightsCron.js';
 
@@ -104,8 +107,11 @@ await server.register(adminEditConfigRoutes, { prefix: '/' });
 await server.register(adminSimulationRoutes, { prefix: '/' });
 await server.register(runtimeConfigRoutes, { prefix: '/' });
 await server.register(playersRoutes, { prefix: '/' });
+await server.register(statLineRoutes, { prefix: '/' });
+await server.register(scheduleRoutes, { prefix: '/' });
 await server.register(authRoutes, { prefix: '/' });
 await server.register(meRoutes, { prefix: '/' });
+await server.register(tradeRoutes, { prefix: '/' });
 
 // ─── Start ───────────────────────────────────────────────────────────────────
 
@@ -128,6 +134,7 @@ try {
   startLiveScoreSync();           // 120-s live score poll (War Room)
   startStatsRefreshJobs(server.log); // Per-league ESPN refresh (daily 04:00 ET + hourly in-season)
   startHighlightsCron(server.log);   // Daily 05:30 ET — team + player highlight refresh
+  startScheduleRefreshJobs(server.log); // Every 6 hours — refresh weekly schedule cache from ESPN
 
   // Daily 5am ET highlight cache refresh (America/New_York handles DST automatically)
   cron.schedule('0 5 * * *', () => warmHighlightCache(server.log), {
