@@ -416,7 +416,9 @@ const DASHBOARD_HTML = /* html */ `<!doctype html>
     <a href="/admin/edit/triggers" style="color: var(--accent); text-decoration: none; margin: 0 4px;">Triggers</a>·
     <a href="/admin/edit/stat-resolution" style="color: var(--accent); text-decoration: none; margin: 0 4px;">Stat resolution</a>·
     <a href="/admin/edit/pity" style="color: var(--accent); text-decoration: none; margin: 0 4px;">Pity</a>·
-    <a href="/admin/edit/progression" style="color: var(--accent); text-decoration: none; margin: 0 4px;">Progression</a>
+    <a href="/admin/edit/progression" style="color: var(--accent); text-decoration: none; margin: 0 4px;">Progression</a>·
+    <a href="/admin/edit/scoring" style="color: var(--accent); text-decoration: none; margin: 0 4px;">Scoring</a>·
+    <a href="/admin/simulate" style="color: var(--accent); text-decoration: none; margin: 0 4px;">Simulate</a>
   </nav>
 
   <div id="error"></div>
@@ -522,6 +524,12 @@ const DASHBOARD_HTML = /* html */ `<!doctype html>
   <div class="card" id="ratings-distribution-card">
     <h2>Rating Distribution</h2>
     <div id="ratings-distribution-body">Loading…</div>
+  </div>
+
+  <h2 style="margin: 28px 0 12px; font-size: 16px; letter-spacing: 0.4px; color: var(--accent); text-transform: uppercase;">Fairness Simulation</h2>
+  <div class="card" id="simulation-card">
+    <h2>Last Run + Fairness Trend</h2>
+    <div id="simulation-body">Loading…</div>
   </div>
 
   <div class="card" id="routes-card">
@@ -1347,6 +1355,47 @@ const DASHBOARD_HTML = /* html */ `<!doctype html>
     return \`\${m}m \${s % 60}s\`;
   }
 
+  function loadSimulation() {
+    fetch('/admin/api/simulate', { cache: 'no-store' })
+      .then(r => r.json())
+      .then(j => {
+        if (!j || !j.ok) {
+          el('simulation-body').innerHTML = '<span class="tag unmeasured">no runs yet</span> · <a href="/admin/simulate" style="color:var(--accent);">Run new simulation</a>';
+          return;
+        }
+        const local = j.runs || [];
+        const trend = (j.trend || []).filter(t => t.fairness_score != null).slice(0, 30);
+        const last = local.find(r => r.status === 'completed') || trend[0];
+        const lastTs = last ? (last.completed_at || last.started_at) : null;
+        const lastScore = last ? last.fairness_score : null;
+        const scoreColor = lastScore == null ? 'var(--muted)' : lastScore >= 70 ? 'var(--green)' : lastScore >= 50 ? 'var(--yellow)' : 'var(--red)';
+        let trendSvg = '';
+        if (trend.length >= 2) {
+          const w = 280, h = 60;
+          const xs = trend.slice().reverse();
+          const max = Math.max(...xs.map(t => t.fairness_score || 0), 100);
+          const min = Math.min(...xs.map(t => t.fairness_score || 0), 0);
+          const span = Math.max(1, max - min);
+          const points = xs.map((t, i) => {
+            const x = (i / (xs.length - 1)) * w;
+            const y = h - ((t.fairness_score - min) / span) * h;
+            return x.toFixed(1) + ',' + y.toFixed(1);
+          }).join(' ');
+          trendSvg = '<svg viewBox="0 0 ' + w + ' ' + h + '" preserveAspectRatio="none" style="width:100%;height:60px;background:var(--card-2);border-radius:6px;margin-top:8px;">' +
+            '<polyline points="' + points + '" fill="none" stroke="var(--accent)" stroke-width="1.5" /></svg>';
+        }
+        el('simulation-body').innerHTML =
+          '<div class="kv"><span class="k">Last run</span><span>' + (lastTs ? '<code>' + esc(new Date(lastTs).toLocaleString()) + '</code> <span class="muted">(' + esc(relTime(lastTs)) + ')</span>' : '<span class="tag unmeasured">never</span>') + '</span></div>' +
+          '<div class="kv"><span class="k">Fairness score</span><span style="color:' + scoreColor + ';font-weight:600;">' + (lastScore != null ? Math.round(lastScore * 100) / 100 : '—') + '</span></div>' +
+          '<div class="kv"><span class="k">Recent runs</span><span>' + (trend.length || local.length) + '</span></div>' +
+          trendSvg +
+          '<div style="margin-top:10px;"><a class="status-pill ok" style="text-decoration:none;padding:4px 10px;" href="/admin/simulate">Run new simulation →</a></div>';
+      })
+      .catch(err => {
+        el('simulation-body').innerHTML = '<div class="err-banner">' + esc(err.message || 'fetch failed') + '</div>';
+      });
+  }
+
   async function load() {
     try {
       const res = await fetch('/admin/status', { cache: 'no-store' });
@@ -1354,6 +1403,7 @@ const DASHBOARD_HTML = /* html */ `<!doctype html>
       const json = await res.json();
       el('error').innerHTML = '';
       render(json);
+      loadSimulation();
     } catch (err) {
       el('error').innerHTML = \`<div class="err-banner">Failed to load /admin/status: \${esc(err.message)}</div>\`;
     }
