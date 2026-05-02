@@ -619,26 +619,57 @@ CREATE TRIGGER wde_updated_at BEFORE UPDATE ON weekly_draft_events
   FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 
 -- ─── rosters ────────────────────────────────────────────────────────────────
+-- bench_players + roster_free_agent_seed (added 2026-05-01):
+--   * bench_players is a small TEXT[] (capped at 3 in app code) of
+--     player_ids that were displaced from the active 5 by a free-agent
+--     swap. The roster table stays the canonical record of the active
+--     5 (via roster_players); bench is auxiliary state used by the
+--     swap UX so the displaced player is not lost. We store as TEXT[]
+--     (not a join table) because the cap is small and the read path is
+--     single-roster + always-eager.
+--   * roster_free_agent_seed is a stable UUID that seeds the
+--     deterministic FA pool generator in services/freeAgents/pool.ts.
+--     It's set once at roster creation and combined with
+--     iso_week_label() so the same 20 FAs surface for the kid all week,
+--     but the pool rolls every Monday.
 CREATE TABLE IF NOT EXISTS rosters (
-  id              UUID                PRIMARY KEY DEFAULT gen_random_uuid(),
-  event_id        UUID                NOT NULL REFERENCES weekly_draft_events(id) ON DELETE CASCADE,
-  user_id         UUID                NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,
-  roster_index    INT                 NOT NULL CHECK (roster_index BETWEEN 1 AND 3),
-  name            TEXT                NOT NULL,        -- defaults to 'Roster N'
-  draft_mode      draft_mode          NOT NULL DEFAULT 'snake',
-  cap_budget      INT,                                  -- only Cap mode
-  cap_spent       INT                 NOT NULL DEFAULT 0,
-  total_score     NUMERIC(10,2)       NOT NULL DEFAULT 0,
-  is_locked       BOOLEAN             NOT NULL DEFAULT FALSE,
-  meta_json       JSONB               NOT NULL DEFAULT '{}',
-  created_at      TIMESTAMPTZ         NOT NULL DEFAULT NOW(),
-  updated_at      TIMESTAMPTZ         NOT NULL DEFAULT NOW(),
+  id                       UUID                PRIMARY KEY DEFAULT gen_random_uuid(),
+  event_id                 UUID                NOT NULL REFERENCES weekly_draft_events(id) ON DELETE CASCADE,
+  user_id                  UUID                NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,
+  roster_index             INT                 NOT NULL CHECK (roster_index BETWEEN 1 AND 3),
+  name                     TEXT                NOT NULL,        -- defaults to 'Roster N'
+  draft_mode               draft_mode          NOT NULL DEFAULT 'snake',
+  cap_budget               INT,                                  -- only Cap mode
+  cap_spent                INT                 NOT NULL DEFAULT 0,
+  total_score              NUMERIC(10,2)       NOT NULL DEFAULT 0,
+  is_locked                BOOLEAN             NOT NULL DEFAULT FALSE,
+  bench_players            TEXT[]              NOT NULL DEFAULT '{}'
+                            CHECK (array_length(bench_players, 1) IS NULL OR array_length(bench_players, 1) <= 3),
+  roster_free_agent_seed   UUID                NOT NULL DEFAULT gen_random_uuid(),
+  meta_json                JSONB               NOT NULL DEFAULT '{}',
+  created_at               TIMESTAMPTZ         NOT NULL DEFAULT NOW(),
+  updated_at               TIMESTAMPTZ         NOT NULL DEFAULT NOW(),
   UNIQUE (event_id, roster_index)
 );
 CREATE INDEX rosters_user_idx ON rosters (user_id);
 CREATE INDEX rosters_event_idx ON rosters (event_id);
 CREATE TRIGGER rosters_updated_at BEFORE UPDATE ON rosters
   FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+-- Forward-compat ALTER for existing deployments that ran an earlier schema.
+-- Idempotent: safe to re-run after the CREATE TABLE applies cleanly.
+ALTER TABLE rosters
+  ADD COLUMN IF NOT EXISTS bench_players TEXT[] NOT NULL DEFAULT '{}',
+  ADD COLUMN IF NOT EXISTS roster_free_agent_seed UUID NOT NULL DEFAULT gen_random_uuid();
+DO $$ BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'rosters_bench_players_max3_chk'
+  ) THEN
+    ALTER TABLE rosters
+      ADD CONSTRAINT rosters_bench_players_max3_chk
+      CHECK (array_length(bench_players, 1) IS NULL OR array_length(bench_players, 1) <= 3);
+  END IF;
+END $$;
 
 -- ─── roster_players (the 8-slot roster contents) ────────────────────────────
 CREATE TABLE IF NOT EXISTS roster_players (
