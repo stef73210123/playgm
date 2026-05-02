@@ -465,6 +465,40 @@ EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 COMMENT ON TABLE ask_scout_usage IS 'Per-(user, UTC day) Ask Scout LLM call counts. Authoritative source for the daily cap enforced in server/src/services/askScoutLimiter.ts.';
 
 -- ============================================================================
+-- SECTION: Card Scan per-day usage (LLM cap enforcement)
+-- ============================================================================
+-- Mirror of ask_scout_usage. The /cards/scan route calls
+-- cardScanLimiter.checkAndIncrement() before invoking Anthropic vision;
+-- rejections beyond the per-tier cap (see
+-- data/economy/pgm_subscriptions.json#card_scan_daily_cap) never burn LLM
+-- spend. Rows persist past the day for /admin/status analytics.
+
+CREATE TABLE IF NOT EXISTS card_scan_usage (
+  id              BIGSERIAL    PRIMARY KEY,
+  user_id         UUID         NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+  ymd             DATE         NOT NULL,                          -- yyyy-mm-dd in UTC
+  count           INTEGER      NOT NULL DEFAULT 0,
+  last_request_at TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+  CONSTRAINT uq_card_scan_usage_user_day UNIQUE (user_id, ymd)
+);
+
+CREATE INDEX IF NOT EXISTS ix_card_scan_usage_user
+  ON card_scan_usage (user_id);
+-- BRIN on ymd for cheap "last 24h" / "last 30d" admin scans.
+CREATE INDEX IF NOT EXISTS ix_card_scan_usage_ymd_brin
+  ON card_scan_usage USING BRIN (ymd);
+
+ALTER TABLE card_scan_usage ENABLE ROW LEVEL SECURITY;
+DO $$ BEGIN
+  CREATE POLICY card_scan_usage_select_own ON card_scan_usage
+    FOR SELECT USING (auth.uid() = user_id);
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+-- Writes go through the service role (bypasses RLS), same pattern as
+-- pp_events / card_inventory / ask_scout_usage.
+
+COMMENT ON TABLE card_scan_usage IS 'Per-(user, UTC day) Card Scan vision call counts. Authoritative source for the daily cap enforced in server/src/services/cardScanLimiter.ts.';
+
+-- ============================================================================
 -- SECTION: Per-user safety matrix overrides
 -- ============================================================================
 -- Per-user feature overrides applied on top of the age-based safety matrix
