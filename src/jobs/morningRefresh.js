@@ -6,12 +6,15 @@
  *   2. Fetch their most recent event/result
  *   3. Compare against the last stored snapshot (diff)
  *   4. Write a new snapshot and log the diff
+ *   5. Write a dated diffs/YYYY-MM-DD.json file (the daily "dff")
  *
  * Runs standalone (`node src/jobs/morningRefresh.js`) or
  * is called by the cron scheduler in src/index.js.
  */
 
 require('dotenv').config();
+const fs   = require('fs');
+const path = require('path');
 const { lookupPlayer, lastTeamEvents } = require('../api/sportsdb');
 const {
   getAllPlayers, upsertPlayer,
@@ -155,7 +158,29 @@ async function run() {
   });
 
   console.log(`\n=== Done — ${updated} updated, ${failed} failed ===\n`);
+  writeDiffFile(diffSummary, { total: players.length, updated, failed });
   printDiffReport(diffSummary);
+}
+
+function writeDiffFile(diffSummary, { total, updated, failed }) {
+  const now  = new Date();
+  const date = now.toISOString().slice(0, 10); // YYYY-MM-DD
+  const dir  = path.resolve('./diffs');
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+
+  const output = {
+    date,
+    generated_at:  now.toISOString(),
+    players_total:   total,
+    players_updated: updated,
+    players_failed:  failed,
+    changes: diffSummary.filter((e) => e.diff && e.diff.length > 0),
+    errors:  diffSummary.filter((e) => e.error),
+  };
+
+  const filePath = path.join(dir, `${date}.json`);
+  fs.writeFileSync(filePath, JSON.stringify(output, null, 2));
+  console.log(`Diff file written → diffs/${date}.json`);
 }
 
 function printDiffReport(diffSummary) {
