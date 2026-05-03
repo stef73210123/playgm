@@ -32,28 +32,37 @@ export interface ScoringFormulaFile {
       weights: Record<string, number>;
       negative_caps?: Record<string, number>;
       games_per_week?: number;
+      /** Inverse-scale factor applied AFTER summing weights. Used to normalize
+       *  per-game-day median PP across sports so a roster slot pays roughly
+       *  the same regardless of which sport's player fills it on a given day.
+       *  See data/economy/pgm_scoring_formula.json. */
+      per_sport_multiplier?: number;
     };
     football: {
       weights: Record<string, number>;
       negative_caps?: Record<string, number>;
       games_per_week?: number;
+      per_sport_multiplier?: number;
     };
     baseball: {
       hitter_weights: Record<string, number>;
       pitcher_weights: Record<string, number>;
       negative_caps?: Record<string, number>;
       games_per_week?: number;
+      per_sport_multiplier?: number;
     };
     hockey: {
       skater_weights: Record<string, number>;
       goalie_weights: Record<string, number>;
       negative_caps?: Record<string, number>;
       games_per_week?: number;
+      per_sport_multiplier?: number;
     };
     soccer: {
       weights: Record<string, number>;
       negative_caps?: Record<string, number>;
       games_per_week?: number;
+      per_sport_multiplier?: number;
     };
   };
   global: {
@@ -206,10 +215,24 @@ function negativeCaps(sport: Sport, formula: ScoringFormulaFile): Record<string,
   }
 }
 
+/** Read a sport's per_sport_multiplier (default 1 = no change). */
+function perSportMultiplier(sport: Sport, formula: ScoringFormulaFile): number {
+  const v = formula.by_sport[sport].per_sport_multiplier;
+  if (typeof v === 'number' && Number.isFinite(v) && v > 0) return v;
+  return 1;
+}
+
 /**
  * Score a single player's per-week (or per-season) stat bag through the
  * configured formula. Caps clamp negative contributions so a player can't
- * dig too deep a hole.
+ * dig too deep a hole. Final total is scaled by per_sport_multiplier so the
+ * per-game-day median PP converges across sports — a roster slot filled by
+ * an NFL player on Sunday pays roughly the same as a slot filled by an MLB
+ * player on Wednesday.
+ *
+ * Note: cards (`baseScore × multiplier` in seasonSimulator.ts) are applied
+ * downstream, so a no-played player still scores 0 — multiplicative uplift
+ * on a 0 base is 0 by design.
  */
 export function scorePlayerWeek(
   playerStats: Record<string, number>,
@@ -227,7 +250,7 @@ export function scorePlayerWeek(
     if (cap !== undefined && contribution < cap) contribution = cap;
     total += contribution;
   }
-  return total;
+  return total * perSportMultiplier(sport, formula);
 }
 
 /** Set of every weight key referenced by the formula (across all sport bags). */
