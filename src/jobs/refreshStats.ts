@@ -25,6 +25,7 @@ import path from 'node:path';
 import type { FastifyBaseLogger } from 'fastify';
 import { pullLeague, cachePath } from '../scripts/pull-stats-shared.js';
 import { clearCacheLookups } from '../services/ratings/cacheLookup.js';
+import { isSportEnabled } from '../services/sportsConfig.js';
 import type { League } from '../services/stats/types.js';
 
 interface PipelineEntry {
@@ -118,6 +119,14 @@ const LEAGUE_OPTS: Record<League, { season: string; seasonLabel: string; outFile
 
 /** Run the per-league pull. Updates STATUS and clears in-memory cache. */
 async function runRefresh(league: League, log?: FastifyBaseLogger): Promise<void> {
+  // Skip leagues the admin has disabled in sports_config.json. Cache is hot
+  // (60s) so a flip in the editor is picked up by the next cron tick. Saves
+  // wasted API calls + stops half-broken pipelines (e.g. MLS) from polluting
+  // STATUS with failures while we wait on a real data source.
+  if (!isSportEnabled(league)) {
+    log?.info(`[refreshStats:${league}] skipped — sport disabled in sports_config`);
+    return;
+  }
   log?.info(`[refreshStats:${league}] starting`);
   try {
     const cache = await pullLeague(league, LEAGUE_OPTS[league]);

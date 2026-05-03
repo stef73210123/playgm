@@ -33,6 +33,7 @@ import {
   getPlayerRating,
   getPlayerStats,
 } from '../services/ratings/cacheLookup.js';
+import { isSportEnabled } from '../services/sportsConfig.js';
 import { computeRating, type Grade } from '../services/ratings/computeRatings.js';
 import type { League } from '../services/stats/types.js';
 import type { PlayerCacheEntry } from '../scripts/pull-stats-shared.js';
@@ -214,11 +215,20 @@ async function buildResponse(player: PlayerCacheEntry, league: League): Promise<
 export async function statLineRoutes(fastify: FastifyInstance): Promise<void> {
   fastify.get<{ Params: { teamName: string }; Querystring: { league?: League } }>(
     '/api/stats/team/:teamName',
-    async (req, _reply) => {
+    async (req, reply) => {
       const teamName = decodeURIComponent(req.params.teamName);
       const wantLeague = req.query.league;
+      // If the caller pinned a league, reject early when that league is
+      // disabled in sports_config (e.g. ?league=mls while MLS is hidden).
+      // Returns 404 with a structured reason so stale clients can degrade
+      // gracefully.
+      if (wantLeague && !isSportEnabled(wantLeague)) {
+        return reply.code(404).send({ error: 'sport_disabled', reason: 'sport_disabled', sport: wantLeague });
+      }
+      // No-league lookups: filter the per-team hits by sport-enabled so we
+      // never leak disabled-sport data even when the client doesn't know.
       const hits = findPlayersByTeam(teamName).filter(
-        (h) => !wantLeague || h.league === wantLeague,
+        (h) => (!wantLeague || h.league === wantLeague) && isSportEnabled(h.league),
       );
       const out = await Promise.all(hits.map((h) => buildResponse(h.player, h.league)));
       return { team: teamName, count: out.length, players: out };
@@ -237,6 +247,11 @@ export async function statLineRoutes(fastify: FastifyInstance): Promise<void> {
       if (!hit) {
         return reply.send({ player: null });
       }
+      // Reject if the resolved player belongs to a disabled sport — keeps
+      // disabled-league data from leaking via stale name lookups.
+      if (!isSportEnabled(hit.league)) {
+        return reply.code(404).send({ error: 'sport_disabled', reason: 'sport_disabled', sport: hit.league });
+      }
       const player = await buildResponse(hit.player, hit.league);
       return { player };
     },
@@ -249,6 +264,9 @@ export async function statLineRoutes(fastify: FastifyInstance): Promise<void> {
       const hit = findPlayer(id);
       if (!hit) {
         return reply.code(404).send({ error: 'player_not_found', player_id: id });
+      }
+      if (!isSportEnabled(hit.league)) {
+        return reply.code(404).send({ error: 'sport_disabled', reason: 'sport_disabled', sport: hit.league });
       }
       const player = await buildResponse(hit.player, hit.league);
       return { player };
