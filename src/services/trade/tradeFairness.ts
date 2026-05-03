@@ -26,6 +26,13 @@ export interface TradeRulesSpec {
     max_pp_per_side: number;
     min_players_per_side: number;
     max_players_per_side: number;
+    /**
+     * v1.1.0 — when true, both sides of a trade must include the same
+     * number of players (1v1, 2v2, 3v3, 4v4). Asymmetric trades are
+     * rejected client + server side. Optional for backwards-compat with
+     * older spec snapshots; absence treated as `false`.
+     */
+    require_equal_player_counts?: boolean;
   };
   execution: { lock_duration_hours: number };
   caps: {
@@ -131,6 +138,15 @@ export function evaluateFairness(sideA: TradeSide, sideB: TradeSide): FairnessRe
   };
   checkSide('A', sideA);
   checkSide('B', sideB);
+
+  // v1.1.0 — both sides must include the same number of players
+  // (1v1, 2v2, 3v3, 4v4). Asymmetric trades are rejected outright.
+  if (
+    r.require_equal_player_counts !== false &&
+    sideA.players.length !== sideB.players.length
+  ) {
+    errors.push('Both sides must trade the same number of players.');
+  }
 
   if (sideA.user_id === sideB.user_id) {
     errors.push('Trade sides must belong to different users');

@@ -731,6 +731,14 @@ function validateTradeRules(body: Record<string, unknown>): ValidationError[] {
           message: 'must be ≥ min_players_per_side',
         });
       }
+      // v1.1.0 — equal-count toggle.
+      if (f['require_equal_player_counts'] !== undefined &&
+          typeof f['require_equal_player_counts'] !== 'boolean') {
+        errs.push({
+          field: 'fairness.require_equal_player_counts',
+          message: 'must be boolean',
+        });
+      }
     }
   }
 

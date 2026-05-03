@@ -39,12 +39,15 @@ const gradeSchema = z.enum([
   'A+', 'A', 'A-', 'B+', 'B', 'B-', 'C+', 'C', 'C-', 'D+', 'D', 'D-', 'F',
 ]);
 
+// v1.1.0 — bumped from .max(3) to .max(4). Equal-count enforcement happens
+// downstream in evaluateFairness() so a 2v3 still parses past zod and lands
+// at the same friendly error users see in the client.
 const sideSchema = z.object({
   user_id: z.string().min(1),
   players: z
     .array(z.object({ player_id: z.string().min(1), grade: gradeSchema }))
     .min(1)
-    .max(3),
+    .max(4),
   pp_sweetener: z.number().int().min(0).max(2000).optional(),
 });
 
