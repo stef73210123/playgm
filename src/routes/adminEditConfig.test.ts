@@ -277,6 +277,64 @@ describe('admin edit config routes', () => {
     }
   });
 
+  it('PATCH /admin/api/earn-rates persists subscription_daily_boost — wallet grant is load-bearing', async () => {
+    // Regression for the v2 rebalance: editing the daily PP boost in the
+    // earn-rates editor MUST land on disk so the next /me/state hydration
+    // and the next daily-bonus claim see the new value. Stefan tested this
+    // by editing a tier in the admin UI and verifying the wallet picked
+    // up the change on the next claim — this test pins that contract.
+    const app = await buildApp();
+    try {
+      const res = await app.inject({
+        method: 'PATCH',
+        url: '/admin/api/earn-rates',
+        payload: {
+          subscription_daily_boost: {
+            free: 250,
+            starter: 600,
+            playmaker: 1200,
+            champion: 2500,
+          },
+        },
+      });
+      expect(res.statusCode).toBe(200);
+      expect(mockWrites.length).toBe(1);
+      const written = JSON.parse(mockWrites[0]!.data) as {
+        subscription_daily_boost: Record<string, number>;
+      };
+      expect(written.subscription_daily_boost.free).toBe(250);
+      expect(written.subscription_daily_boost.starter).toBe(600);
+      expect(written.subscription_daily_boost.playmaker).toBe(1200);
+      expect(written.subscription_daily_boost.champion).toBe(2500);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('PATCH /admin/api/subscriptions/:id persists daily_pp_boost — display value is load-bearing', async () => {
+    // Sister regression to the earn-rates test above: editing the
+    // marketing-card daily PP value on the subscriptions editor also
+    // lands on disk. Both editors stay in sync per Stefan's spec; the
+    // economy.test.ts parity test will fail loudly if they drift.
+    const app = await buildApp();
+    try {
+      const res = await app.inject({
+        method: 'PATCH',
+        url: '/admin/api/subscriptions/free',
+        payload: { daily_pp_boost: 250 },
+      });
+      expect(res.statusCode).toBe(200);
+      expect(mockWrites.length).toBe(1);
+      const written = JSON.parse(mockWrites[0]!.data) as {
+        tiers: Array<{ tier_id: string; daily_pp_boost: number }>;
+      };
+      const free = written.tiers.find((t) => t.tier_id === 'free');
+      expect(free?.daily_pp_boost).toBe(250);
+    } finally {
+      await app.close();
+    }
+  });
+
   it('PATCH /admin/api/subscriptions/:id rejects unknown pack_id in allocation', async () => {
     const app = await buildApp();
     try {

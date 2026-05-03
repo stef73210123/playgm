@@ -24,6 +24,11 @@ export {
 export type { ActivityKey, EarnContext } from './earnRates.js';
 
 export {
+  computeDailyPpGrant,
+  dayKey,
+} from './dailyGrant.js';
+
+export {
   buildSubscriptions,
   getSubscription,
   getMonthlyPackAllocation,
