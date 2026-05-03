@@ -23,6 +23,8 @@ import {
   computeWeeklyProjection,
   type WeeklyProjection,
 } from '../services/weeklyProjection.js';
+import { supabase } from '../db/client.js';
+import { validateUserContent } from '../services/nicknameModeration.js';
 
 /**
  * Resolve the caller's subscription tier. Same dev shim as practiceDrafts.ts
@@ -171,6 +173,80 @@ export async function rostersRoutes(fastify: FastifyInstance): Promise<void> {
         games_count: result.gamesCount,
         projected_points: result.projectedPoints,
         cachedUntil: result.cachedUntilIso,
+      });
+    },
+  );
+
+  // ─── POST /rosters/:id/name — kid-authored team name override.
+  // Same moderation pipeline as POST /profile/display-name. The
+  // `team_name_status` column is the same three-state machine
+  // (pending/approved/rejected) and `team_name` always stores the
+  // normalized version of the candidate so the admin queue has
+  // something to review on rejection.
+  const teamNameSchema = z.object({ team_name: z.string().min(0).max(40) });
+  fastify.post<{ Params: { id: string } }>(
+    '/rosters/:id/name',
+    { preHandler: requireAuth },
+    async (req, reply) => {
+      const { profileId } = req as AuthenticatedRequest;
+      const parsed = teamNameSchema.safeParse(req.body);
+      if (!parsed.success)
+        return reply.code(400).send({ error: parsed.error.flatten() });
+
+      // Verify the roster is owned by the caller. RLS on rosters_own
+      // enforces this from the kid's session, but we re-check here so
+      // the response shape is consistent (404 vs 401).
+      const { data: existing, error: fetchErr } = await supabase
+        .from('rosters')
+        .select('id, user_id')
+        .eq('id', req.params.id)
+        .single();
+      if (fetchErr || !existing) {
+        return reply.code(404).send({ error: 'roster not found' });
+      }
+      if ((existing as { user_id: string }).user_id !== profileId) {
+        return reply.code(403).send({ error: 'not your roster' });
+      }
+
+      // Empty → clear back to system default
+      if (parsed.data.team_name.trim() === '') {
+        const { error } = await supabase
+          .from('rosters')
+          .update({ team_name: null, team_name_status: 'pending' })
+          .eq('id', req.params.id);
+        if (error) return reply.code(500).send({ error: error.message });
+        return reply.send({ status: 'cleared', team_name: null });
+      }
+
+      const { data: profile } = await supabase
+        .from('profiles')
+        .select('age, birth_year')
+        .eq('id', profileId)
+        .single();
+      const age =
+        (profile as { age?: number; birth_year?: number } | null)?.age ??
+        (typeof (profile as { birth_year?: number } | null)?.birth_year === 'number'
+          ? new Date().getFullYear() - ((profile as { birth_year: number }).birth_year)
+          : null);
+
+      const verdict = await validateUserContent({
+        content: parsed.data.team_name,
+        age,
+        kind: 'team_name',
+      });
+
+      const status = verdict.ok ? 'approved' : 'rejected';
+      const { error: updErr } = await supabase
+        .from('rosters')
+        .update({ team_name: verdict.normalized, team_name_status: status })
+        .eq('id', req.params.id);
+      if (updErr) return reply.code(500).send({ error: updErr.message });
+
+      return reply.send({
+        status,
+        team_name: verdict.ok ? verdict.normalized : null,
+        reason: verdict.ok ? undefined : verdict.reason,
+        stage: verdict.stage,
       });
     },
   );
