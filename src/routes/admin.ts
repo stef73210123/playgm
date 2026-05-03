@@ -503,6 +503,7 @@ const DASHBOARD_HTML = /* html */ `<!doctype html>
     <a href="/admin/edit/progression" style="color: var(--accent); text-decoration: none; margin: 0 4px;">Progression</a>·
     <a href="/admin/edit/scoring" style="color: var(--accent); text-decoration: none; margin: 0 4px;">Scoring</a>·
     <a href="/admin/edit/trade-rules" style="color: var(--accent); text-decoration: none; margin: 0 4px;">Trade rules</a>·
+    <a href="/admin/edit/sports-config" style="color: var(--accent); text-decoration: none; margin: 0 4px;">Sports config</a>·
     <a href="/admin/simulate" style="color: var(--accent); text-decoration: none; margin: 0 4px;">Simulate</a>
   </nav>
 
@@ -541,6 +542,11 @@ const DASHBOARD_HTML = /* html */ `<!doctype html>
         <div class="label">Trade Engine Rules</div>
         <div class="value">Trade Rules</div>
         <div class="sub" id="editor-sub-trade-rules">—</div>
+      </a>
+      <a class="doc-tile" id="editor-tile-sports-config" href="/admin/edit/sports-config">
+        <div class="label">Per-Sport Enabled Flag</div>
+        <div class="value">Sports Config</div>
+        <div class="sub" id="editor-sub-sports-config">—</div>
       </a>
     </div>
   </div>
@@ -1593,6 +1599,22 @@ const DASHBOARD_HTML = /* html */ `<!doctype html>
           if (f.max_imbalance_pct != null) parts.push('Threshold: ±' + f.max_imbalance_pct + '%');
           if (e.lock_duration_hours != null) parts.push('Lock: ' + e.lock_duration_hours + 'h');
           sub.textContent = parts.join(' • ') || 'edit rules';
+        }
+      }
+    } catch {
+      /* tolerated */
+    }
+    // Sports config badge: "4 of 5 active — MLS hidden"
+    try {
+      const res = await fetch('/admin/api/sports-config', { cache: 'no-store' });
+      if (res.ok) {
+        const j = await res.json();
+        const sub = document.getElementById('editor-sub-sports-config');
+        if (sub && j && j.ok && Array.isArray(j.items)) {
+          const total = j.items.length;
+          const active = j.items.filter(s => s.enabled).length;
+          const hidden = j.items.filter(s => !s.enabled).map(s => (s.league || s.id || '').toUpperCase()).join(', ');
+          sub.textContent = active + ' of ' + total + ' active' + (hidden ? ' — ' + hidden + ' hidden' : '');
         }
       }
     } catch {

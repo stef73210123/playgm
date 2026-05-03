@@ -28,6 +28,7 @@ import {
   type ValidationError,
 } from './adminEdit.js';
 import { invalidateTradeRulesCache } from '../services/trade/tradeFairness.js';
+import { invalidateSportsConfigCache } from '../services/sportsConfig.js';
 import { invalidateConfigCache } from './runtimeConfig.js';
 
 // ─── File paths ──────────────────────────────────────────────────────────
@@ -40,6 +41,7 @@ const STAT_RESOLUTION_PATH = path.join(PROJECT_ROOT, 'data', 'cards', 'pgm_stat_
 const PITY_PATH = path.join(PROJECT_ROOT, 'data', 'cards', 'pgm_pity_timers.json');
 const PROGRESSION_PATH = path.join(PROJECT_ROOT, 'data', 'economy', 'pgm_progression.json');
 const TRADE_RULES_PATH = path.join(PROJECT_ROOT, 'data', 'economy', 'pgm_trade_rules.json');
+const SPORTS_CONFIG_PATH = path.join(PROJECT_ROOT, 'data', 'system', 'sports_config.json');
 
 // ─── Constants ───────────────────────────────────────────────────────────
 const RARITIES = ['common', 'uncommon', 'rare', 'epic', 'legendary'] as const;
@@ -187,6 +189,18 @@ interface ProgressionFile {
   tier_up_bonus_pp: number;
   contest_gating: Record<string, number>;
 }
+interface SportsConfigEntry {
+  enabled: boolean;
+  label: string;
+  league: string;
+  disabled_reason?: string;
+}
+interface SportsConfigFile {
+  version: string;
+  last_updated_iso?: string;
+  sports: Record<string, SportsConfigEntry>;
+}
+
 interface TradeRulesFile {
   version: string;
   fairness: {
@@ -1498,6 +1512,99 @@ export async function adminEditConfigRoutes(fastify: FastifyInstance): Promise<v
   fastify.put('/admin/api/trade-rules', writeTradeRules);
   // Accept PATCH too — admin writers in this file use PATCH semantics elsewhere.
   fastify.patch('/admin/api/trade-rules', writeTradeRules);
+
+  // ═══ SPORTS CONFIG ═══════════════════════════════════════════════════════
+  // Per-sport enabled flag + label/league/disabled_reason. Edits mutate
+  // data/system/sports_config.json and invalidate the runtime config cache so
+  // /api/config/v1 reflects the change without a server bounce. Schema is
+  // tiny — one row per sport id, save per-row.
+  fastify.get('/admin/edit/sports-config', async (_req, reply) => {
+    reply.type('text/html; charset=utf-8');
+    return pageHtml(
+      'Sports config',
+      'Sports Config',
+      `<div class="muted" style="margin-bottom:10px;">
+        Source: <code>data/system/sports_config.json</code> · auto-commits on save.
+        Runtime cache + <code>/api/config/v1</code> are invalidated on save so the
+        client picks up the toggle without a rebuild. Disabled sports are hidden
+        across the app (sport selectors, trivia, scouting, highlights, settings)
+        and their server endpoints reject with <code>{ reason: 'sport_disabled' }</code>.
+      </div>
+      <div class="card-block">
+        <table id="tbl">
+          <thead><tr>
+            <th>Sport ID</th><th>Label</th><th>League</th>
+            <th>Enabled</th><th>Disabled reason</th><th>Actions</th>
+          </tr></thead>
+          <tbody></tbody>
+        </table>
+        <div class="muted" style="font-size:11px;margin-top:6px;">
+          Sport IDs are read-only. To add a new sport, edit the JSON file directly
+          and ensure the corresponding stat-cache + team data exists.
+        </div>
+      </div>`,
+      SPORTS_CONFIG_JS,
+    );
+  });
+
+  fastify.get('/admin/api/sports-config', async (_req, reply) => {
+    try {
+      const file = await readJson<SportsConfigFile>(SPORTS_CONFIG_PATH);
+      const items = Object.entries(file.sports).map(([id, entry]) => ({ id, ...entry }));
+      return { ok: true, items, version: file.version };
+    } catch (err) {
+      reply
+        .code(500)
+        .send({ ok: false, error: err instanceof Error ? err.message : 'load failed' });
+      return reply;
+    }
+  });
+
+  fastify.patch('/admin/api/sports-config/:id', async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const errs: ValidationError[] = [];
+    if (body['enabled'] !== undefined && typeof body['enabled'] !== 'boolean') {
+      errs.push({ field: 'enabled', message: 'must be boolean' });
+    }
+    if (body['label'] !== undefined && !isStr(body['label'], 40)) {
+      errs.push({ field: 'label', message: 'must be non-empty string ≤40 chars' });
+    }
+    if (body['league'] !== undefined && !isStr(body['league'], 20)) {
+      errs.push({ field: 'league', message: 'must be non-empty string ≤20 chars' });
+    }
+    if (
+      body['disabled_reason'] !== undefined &&
+      body['disabled_reason'] !== null &&
+      typeof body['disabled_reason'] !== 'string'
+    ) {
+      errs.push({ field: 'disabled_reason', message: 'must be string or null' });
+    }
+    if (errs.length) return badRequest(reply, errs);
+
+    const file = await readJson<SportsConfigFile>(SPORTS_CONFIG_PATH);
+    if (!file.sports[id]) return notFound(reply, `sport ${id}`);
+    const cur = file.sports[id];
+    const merged: SportsConfigEntry = {
+      enabled: body['enabled'] !== undefined ? (body['enabled'] as boolean) : cur.enabled,
+      label: body['label'] !== undefined ? (body['label'] as string) : cur.label,
+      league: body['league'] !== undefined ? (body['league'] as string) : cur.league,
+      disabled_reason:
+        body['disabled_reason'] !== undefined
+          ? ((body['disabled_reason'] as string) ?? '')
+          : (cur.disabled_reason ?? ''),
+    };
+    file.sports[id] = merged;
+    file.last_updated_iso = new Date().toISOString();
+    await writeJson(SPORTS_CONFIG_PATH, file);
+    invalidateSportsConfigCache();
+    invalidateConfigCache();
+    const commit = autoCommit(
+      relFromRoot(SPORTS_CONFIG_PATH),
+      `chore(content): update sports config — ${id}`,
+    );
+    return { ok: true, item: { id, ...merged }, commit };
+  });
 }
 
 // ─── Inline editor JS modules ────────────────────────────────────────────
@@ -2190,6 +2297,56 @@ const TRADE_RULES_JS = /* javascript */ `
     return out;
   }
 
+  load();
+})();
+`;
+
+const SPORTS_CONFIG_JS = /* javascript */ `
+(() => {
+  ${COMMON_JS_PRELUDE}
+  async function load() {
+    const res = await fetch('/admin/api/sports-config');
+    const j = await res.json();
+    if (!j.ok) return;
+    const tbody = document.querySelector('#tbl tbody');
+    tbody.innerHTML = j.items.map(s => {
+      const enabled = !!s.enabled;
+      const reason = s.disabled_reason || '';
+      return '<tr data-id="' + esc(s.id) + '">' +
+        '<td><code>' + esc(s.id) + '</code></td>' +
+        '<td><input class="label" value="' + esc(s.label) + '" maxlength="40" /></td>' +
+        '<td><input class="league" value="' + esc(s.league) + '" maxlength="20" style="width:80px;" /></td>' +
+        '<td style="text-align:center;"><input class="enabled" type="checkbox" ' + (enabled ? 'checked' : '') + ' /></td>' +
+        '<td><textarea class="reason" rows="1" placeholder="(only used when disabled)" style="width:100%;min-width:200px;">' + esc(reason) + '</textarea></td>' +
+        '<td><button class="btn primary save">Save</button><div class="hint status"></div></td>' +
+      '</tr>';
+    }).join('');
+    tbody.querySelectorAll('.save').forEach(b => b.addEventListener('click', save));
+    // Toggle the reason cell's visual prominence based on enabled state.
+    tbody.querySelectorAll('.enabled').forEach(cb => cb.addEventListener('change', syncRowState));
+    tbody.querySelectorAll('tr').forEach(syncRowFromCheckbox);
+  }
+  function syncRowFromCheckbox(tr) {
+    const cb = tr.querySelector('.enabled');
+    if (!cb) return;
+    tr.querySelector('.reason').style.opacity = cb.checked ? '0.4' : '1';
+  }
+  function syncRowState(ev) {
+    syncRowFromCheckbox(ev.target.closest('tr'));
+  }
+  async function save(ev) {
+    const tr = ev.target.closest('tr');
+    const id = tr.dataset.id;
+    const status = tr.querySelector('.status');
+    const body = {
+      label: tr.querySelector('.label').value.trim(),
+      league: tr.querySelector('.league').value.trim(),
+      enabled: tr.querySelector('.enabled').checked,
+      disabled_reason: tr.querySelector('.reason').value.trim(),
+    };
+    const r = await saveJson('/admin/api/sports-config/' + encodeURIComponent(id), body);
+    showStatus(status, r.ok, r.ok ? 'saved' : ((r.json.errors||[]).map(e=>e.field+': '+e.message).join(', ') || 'error'));
+  }
   load();
 })();
 `;
