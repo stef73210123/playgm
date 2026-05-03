@@ -14,9 +14,16 @@
  *   pending      → expired    (TTL elapsed — surfaced lazily; no cron)
  *
  * Fairness is enforced at propose time: lopsided proposals never make it
- * into the table. Caps (per-season, per-roster) are also enforced at
- * propose time using the `trades` table itself as the source of truth
- * (executed-trade count for the (user_id, season_key) tuple).
+ * into the table. Caps are enforced at propose time using the `trades`
+ * table itself as the source of truth.
+ *
+ * v1.1.0 — caps are now per-DAY (UTC-resetting), not per-season.
+ *   We count the proposer's executed-trade rows whose `created_at` falls
+ *   inside the current UTC day window (00:00:00Z → 23:59:59.999Z) and
+ *   reject the new proposal once the cap is reached. The previous
+ *   `season_key` index path is retained on the `trades` table but no
+ *   longer drives the cap math; see migrations/010_trade_daily_window.sql
+ *   for the partial index that backs the per-day lookup.
  *
  * "Executing" a trade currently writes the trade rows + lock rows. The
  * actual roster swap is a separate hand-off that runs against the
@@ -94,29 +101,49 @@ function plusHoursIso(h: number): string {
   return new Date(Date.now() + h * 3600_000).toISOString();
 }
 
-/** Count trades the proposer has had `accepted` (executed) this season. */
-async function executedTradeCountForSeason(
-  user_id: string,
-  season_key: string,
-): Promise<number> {
-  // The trades table stores season_key on every row so per-season counting
-  // is just an indexed scan.
+/**
+ * Compute the bounds of the current UTC day window — [00:00:00.000Z,
+ * 24:00:00.000Z). Pure helper, exported for tests so we can freeze
+ * "today" against a known instant without monkeypatching Date.
+ */
+export function utcDayWindow(now: Date = new Date()): { startIso: string; endIso: string } {
+  const start = new Date(Date.UTC(
+    now.getUTCFullYear(),
+    now.getUTCMonth(),
+    now.getUTCDate(),
+    0, 0, 0, 0,
+  ));
+  // End is exclusive — we use < end for the upper bound on the query.
+  const end = new Date(start.getTime() + 24 * 3600_000);
+  return { startIso: start.toISOString(), endIso: end.toISOString() };
+}
+
+/**
+ * v1.1.0 — count executed trades for a user inside the current UTC day.
+ * Mirrors the prior per-season counter but pivots the where-clause from
+ * `season_key` to `created_at` between the day bounds. Backed by the
+ * partial index added in migrations/010_trade_daily_window.sql.
+ */
+async function executedTradeCountForUtcDay(user_id: string): Promise<number> {
+  const { startIso, endIso } = utcDayWindow();
   const { count, error } = await supabase
     .from('trades')
     .select('id', { count: 'exact', head: true })
     .eq('status', 'accepted')
-    .eq('season_key', season_key)
+    .gte('created_at', startIso)
+    .lt('created_at', endIso)
     .or(`proposer_id.eq.${user_id},responder_id.eq.${user_id}`);
 
   if (error) throw new Error(`trades count query failed: ${error.message}`);
   return count ?? 0;
 }
 
+/** Per-day cap for the given tier. -1 == unlimited. */
 function tierCap(tier: string): number {
   const rules = getTradeRules();
   const cap = rules.caps.by_tier[tier];
-  if (!cap) return rules.caps.by_tier['free']?.trades_per_season ?? 2;
-  return cap.trades_per_season;
+  if (!cap) return rules.caps.by_tier['free']?.trades_per_day ?? 1;
+  return cap.trades_per_day;
 }
 
 /** True if the existing roster lock blocks an outbound trade right now. */
@@ -157,17 +184,17 @@ export async function proposeTrade(input: ProposeInput): Promise<ProposeResult> 
     };
   }
 
-  // Cap check (per-season, per-roster).
+  // v1.1.0 — daily cap (UTC-resetting). -1 means unlimited.
   const cap = tierCap(input.proposer_tier);
   if (cap !== -1) {
-    const used = await executedTradeCountForSeason(input.proposer_id, input.season_key);
+    const used = await executedTradeCountForUtcDay(input.proposer_id);
     if (used >= cap) {
       return {
         ok: false,
         fairness,
         error: {
           code: 'TRADE_CAP_REACHED',
-          message: `You've used your ${cap} season trades — upgrade for unlimited trades.`,
+          message: `Daily limit reached — you've used your ${cap} ${cap === 1 ? 'trade' : 'trades'} for today. Resets at UTC midnight.`,
         },
       };
     }

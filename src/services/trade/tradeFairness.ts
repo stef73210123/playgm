@@ -36,7 +36,9 @@ export interface TradeRulesSpec {
   };
   execution: { lock_duration_hours: number };
   caps: {
-    by_tier: Record<string, { trades_per_season: number }>;
+    /** v1.1.0 — caps reset window. 'utc_day' resets at UTC midnight. */
+    reset_window?: 'utc_day' | 'season';
+    by_tier: Record<string, { trades_per_day: number }>;
   };
   age_safety: { under_13_friend_list_only: boolean };
   expiry: { proposal_ttl_hours: number };

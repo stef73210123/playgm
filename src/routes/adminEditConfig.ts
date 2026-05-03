@@ -119,8 +119,13 @@ interface SubTier {
   daily_pp_boost: number;
   ask_scout_daily_cap: number;
   card_scan_daily_cap: number;
-  /** Per-season trade cap. -1 == unlimited. */
-  trade_cap_per_season?: number;
+  /**
+   * v1.1.0 — per-day trade cap (UTC-resetting). -1 == unlimited. Replaces
+   * the legacy `trade_cap_per_season` field; the trade engine now reads
+   * this and counts the user's executed-trade rows for the current UTC
+   * day. New defaults: free 1, starter 3, playmaker 6, champion -1.
+   */
+  trade_cap_per_day?: number;
   /** Free-form admin notes. */
   notes?: string;
 }
@@ -211,10 +216,14 @@ interface TradeRulesFile {
     max_pp_per_side: number;
     min_players_per_side: number;
     max_players_per_side: number;
+    /** v1.1.0 — equal-count toggle. */
+    require_equal_player_counts?: boolean;
   };
   execution: { lock_duration_hours: number };
   caps: {
-    by_tier: Record<string, { trades_per_season: number } & Record<string, unknown>>;
+    /** v1.1.0 — caps reset window. UTC midnight. */
+    reset_window?: 'utc_day' | 'season';
+    by_tier: Record<string, { trades_per_day: number } & Record<string, unknown>>;
   };
   age_safety: { under_13_friend_list_only: boolean };
   expiry: { proposal_ttl_hours: number };
@@ -476,11 +485,11 @@ function validateSubscriptionTier(
       });
     }
   }
-  if (body['trade_cap_per_season'] !== undefined) {
-    const v = body['trade_cap_per_season'];
+  if (body['trade_cap_per_day'] !== undefined) {
+    const v = body['trade_cap_per_day'];
     if (!isInt(v) || (v as number) < -1) {
       errs.push({
-        field: 'trade_cap_per_season',
+        field: 'trade_cap_per_day',
         message: 'must be integer ≥-1 (-1 = unlimited)',
       });
     }
@@ -772,11 +781,11 @@ function validateTradeRules(body: Record<string, unknown>): ValidationError[] {
               continue;
             }
             const er = entry as Record<string, unknown>;
-            if (er['trades_per_season'] !== undefined) {
-              const v = er['trades_per_season'];
+            if (er['trades_per_day'] !== undefined) {
+              const v = er['trades_per_day'];
               if (!isInt(v) || (v as number) < -1) {
                 errs.push({
-                  field: `caps.by_tier.${tier}.trades_per_season`,
+                  field: `caps.by_tier.${tier}.trades_per_day`,
                   message: 'must be integer ≥-1 (-1 = unlimited)',
                 });
               }
@@ -984,7 +993,7 @@ export async function adminEditConfigRoutes(fastify: FastifyInstance): Promise<v
       'Subscription Tiers',
       `<div class="muted" style="margin-bottom:10px;">
         Source: <code>data/economy/pgm_subscriptions.json</code> · auto-commits on save.
-        v2 fields: draft modes, FA pool, slot picker, family, trade cap, notes.
+        v2 fields: draft modes, FA pool, slot picker, family, trade cap (per day), notes.
         Use <code>-1</code> for "unlimited" in any numeric cap.
       </div>
 
@@ -1005,7 +1014,7 @@ export async function adminEditConfigRoutes(fastify: FastifyInstance): Promise<v
             <th>Drafts/day</th><th>Cap mode</th><th>Draft modes</th>
             <th>FA pool/wk</th><th>Slot picker</th><th>Family max</th>
             <th>Inv cap</th><th>PP daily</th><th>Scout cap</th><th>Card scan cap</th>
-            <th>Trade cap/season</th>
+            <th>Trade cap/day</th>
             <th>Pack alloc (id:n,…)</th><th>Notes</th><th>Actions</th>
           </tr></thead>
           <tbody></tbody>
@@ -1403,10 +1412,10 @@ export async function adminEditConfigRoutes(fastify: FastifyInstance): Promise<v
       <h2 style="margin:18px 0 8px;font-size:13px;letter-spacing:.4px;color:var(--accent);text-transform:uppercase;">Per-tier trade caps</h2>
       <div class="card-block">
         <table style="width:auto;">
-          <thead><tr><th>Tier</th><th>Trades / season</th><th></th></tr></thead>
+          <thead><tr><th>Tier</th><th>Trades / day</th><th></th></tr></thead>
           <tbody id="capsBody"></tbody>
         </table>
-        <div class="muted" style="font-size:11px;margin-top:6px;">Use <code>-1</code> for "unlimited".</div>
+        <div class="muted" style="font-size:11px;margin-top:6px;">Use <code>-1</code> for "unlimited". Daily window resets at UTC midnight.</div>
       </div>
 
       <h2 style="margin:18px 0 8px;font-size:13px;letter-spacing:.4px;color:var(--accent);text-transform:uppercase;">Age safety</h2>
@@ -1480,7 +1489,7 @@ export async function adminEditConfigRoutes(fastify: FastifyInstance): Promise<v
                 ...file.caps.by_tier,
                 ...((body['caps'] as Record<string, unknown>)['by_tier'] as Record<
                   string,
-                  { trades_per_season: number }
+                  { trades_per_day: number }
                 >),
               },
             },
@@ -1724,7 +1733,7 @@ const SUBSCRIPTIONS_JS = /* javascript */ `
       cap_mode:false, draft_modes:['snake'], fa_pool_size_per_week:10,
       draft_position_control:'none', family_max_profiles:1, monthly_pack_allocation:[],
       card_inventory_cap:100, daily_pp_boost:200, ask_scout_daily_cap:2,
-      card_scan_daily_cap:2, trade_cap_per_season:2, notes:''
+      card_scan_daily_cap:2, trade_cap_per_day:1, notes:''
     },
     starter: {
       name:'Starter', monthly_price_usd:4.99, rosters_per_week:3, practice_drafts_per_day:1,
@@ -1732,7 +1741,7 @@ const SUBSCRIPTIONS_JS = /* javascript */ `
       draft_position_control:'random', family_max_profiles:1,
       monthly_pack_allocation:[{pack_id:'pro_pack',count:1}],
       card_inventory_cap:200, daily_pp_boost:500, ask_scout_daily_cap:5,
-      card_scan_daily_cap:5, trade_cap_per_season:-1, notes:''
+      card_scan_daily_cap:5, trade_cap_per_day:3, notes:''
     },
     playmaker: {
       name:'Playmaker', monthly_price_usd:9.99, rosters_per_week:6, practice_drafts_per_day:3,
@@ -1740,7 +1749,7 @@ const SUBSCRIPTIONS_JS = /* javascript */ `
       draft_position_control:'preferred_slot', family_max_profiles:1,
       monthly_pack_allocation:[{pack_id:'pro_pack',count:3}],
       card_inventory_cap:400, daily_pp_boost:1000, ask_scout_daily_cap:10,
-      card_scan_daily_cap:10, trade_cap_per_season:-1, notes:''
+      card_scan_daily_cap:10, trade_cap_per_day:6, notes:''
     },
     champion: {
       name:'Champion', monthly_price_usd:19.99, rosters_per_week:12, practice_drafts_per_day:-1,
@@ -1751,7 +1760,7 @@ const SUBSCRIPTIONS_JS = /* javascript */ `
         {pack_id:'pro_pack',count:2}
       ],
       card_inventory_cap:-1, daily_pp_boost:2000, ask_scout_daily_cap:20,
-      card_scan_daily_cap:20, trade_cap_per_season:-1, notes:''
+      card_scan_daily_cap:20, trade_cap_per_day:-1, notes:''
     }
   };
 
@@ -1791,7 +1800,7 @@ const SUBSCRIPTIONS_JS = /* javascript */ `
       daily_pp_boost: Number(tr.querySelector('.boost').value),
       ask_scout_daily_cap: Number(tr.querySelector('.scout').value),
       card_scan_daily_cap: Number(tr.querySelector('.scan').value),
-      trade_cap_per_season: Number(tr.querySelector('.trade').value),
+      trade_cap_per_day: Number(tr.querySelector('.trade').value),
       monthly_pack_allocation: allocation,
       notes: tr.querySelector('.notes').value,
     };
@@ -1819,7 +1828,7 @@ const SUBSCRIPTIONS_JS = /* javascript */ `
       ['Daily PP boost', t => fmt(t.daily_pp_boost)],
       ['Ask Scout / day', t => fmt(t.ask_scout_daily_cap)],
       ['Card Scan / day', t => fmt(t.card_scan_daily_cap)],
-      ['Trade cap / season', t => fmt(t.trade_cap_per_season ?? -1)],
+      ['Trade cap / day', t => fmt(t.trade_cap_per_day ?? -1)],
       ['Monthly pack alloc', t => (t.monthly_pack_allocation||[]).map(p => p.pack_id+':'+p.count).join(', ') || '—'],
     ];
     const body = fields.map(([label, getter]) =>
@@ -1852,7 +1861,7 @@ const SUBSCRIPTIONS_JS = /* javascript */ `
       checkUp('daily_pp_boost','Daily PP');
       checkUp('ask_scout_daily_cap','Ask Scout');
       checkUp('card_scan_daily_cap','Card Scan');
-      checkUp('trade_cap_per_season','Trade cap');
+      checkUp('trade_cap_per_day','Trade cap');
     }
     document.getElementById('cmpWarn').textContent =
       warns.length ? '⚠ ' + warns.join(' ') : '';
@@ -1865,7 +1874,7 @@ const SUBSCRIPTIONS_JS = /* javascript */ `
     const slotOpts = SLOT_OPTS.map(o =>
       '<option' + ((t.draft_position_control||'none')===o?' selected':'') + '>'+o+'</option>'
     ).join('');
-    const tradeCap = (t.trade_cap_per_season ?? -1);
+    const tradeCap = (t.trade_cap_per_day ?? -1);
     const notes = t.notes ?? '';
     return '<tr data-id="' + esc(t.tier_id) + '">' +
       '<td data-sort-value="' + esc(String(t.tier_id||'').toLowerCase()) + '"><code>' + esc(t.tier_id) + '</code></td>' +
@@ -1930,7 +1939,7 @@ const SUBSCRIPTIONS_JS = /* javascript */ `
     const status = tr.querySelector('.status');
     const body = rowToBody(tr);
     // Pre-flight: numeric fields must not be < -1; -1 is the sentinel for unlimited.
-    const numericKeys = ['practice_drafts_per_day','card_inventory_cap','ask_scout_daily_cap','card_scan_daily_cap','trade_cap_per_season'];
+    const numericKeys = ['practice_drafts_per_day','card_inventory_cap','ask_scout_daily_cap','card_scan_daily_cap','trade_cap_per_day'];
     for (const k of numericKeys) {
       if (Number.isNaN(body[k]) || body[k] < -1) {
         showStatus(status, false, k + ' must be ≥ -1 (-1 = unlimited)');
@@ -2155,7 +2164,7 @@ const TRADE_RULES_JS = /* javascript */ `
     document.querySelectorAll('#capsBody tr[data-tier]').forEach(tr => {
       const tier = tr.dataset.tier;
       const v = Number(tr.querySelector('.cap').value);
-      caps[tier] = { trades_per_season: v };
+      caps[tier] = { trades_per_day: v };
     });
     return {
       fairness: {
@@ -2220,7 +2229,7 @@ const TRADE_RULES_JS = /* javascript */ `
     document.getElementById('f_pp_per_grade_point').value = f.pp_per_grade_point ?? 200;
     document.getElementById('f_max_pp_per_side').value = f.max_pp_per_side ?? 2000;
     document.getElementById('f_min_players').value = f.min_players_per_side ?? 1;
-    document.getElementById('f_max_players').value = f.max_players_per_side ?? 3;
+    document.getElementById('f_max_players').value = f.max_players_per_side ?? 4;
     document.getElementById('e_lock_hours').value = e.lock_duration_hours ?? 24;
     document.getElementById('e_ttl_hours').value = x.proposal_ttl_hours ?? 72;
     document.getElementById('e_cooldown').value =
@@ -2233,8 +2242,8 @@ const TRADE_RULES_JS = /* javascript */ `
       .filter(t => tiers[t])
       .map(t => '<tr data-tier="'+esc(t)+'">' +
         '<td><code>'+esc(t)+'</code></td>' +
-        '<td><input class="cap" type="number" min="-1" value="'+(tiers[t].trades_per_season ?? -1)+'" style="width:90px;" title="-1 = unlimited" /></td>' +
-        '<td class="muted" style="font-size:11px;">'+(Number(tiers[t].trades_per_season)===-1?'unlimited':'capped')+'</td>' +
+        '<td><input class="cap" type="number" min="-1" value="'+(tiers[t].trades_per_day ?? -1)+'" style="width:90px;" title="-1 = unlimited" /></td>' +
+        '<td class="muted" style="font-size:11px;">'+(Number(tiers[t].trades_per_day)===-1?'unlimited':'capped')+'</td>' +
       '</tr>').join('');
   }
 
