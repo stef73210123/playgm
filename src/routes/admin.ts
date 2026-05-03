@@ -101,6 +101,8 @@ const ROUTE_PURPOSES: Record<string, string> = {
   'GET /admin/status': 'Status aggregator (this dashboard)',
   'GET /admin/dashboard': 'Status dashboard HTML',
   'GET /admin/api/economic-metrics': 'Live economic metrics (PP, packs, cards, subs, retention)',
+  'GET /admin/api/scoring-trend': 'Per-day stacked sport contribution + roster_avg over a date window',
+  'GET /admin/edit/scoring-trend': 'Scoring trend chart (Chart.js stacked bar + line overlay)',
   'GET /admin/edit/advertising': 'Advertising actuals editor',
   'GET /admin/api/advertising': 'Advertising report (all channels)',
   'GET /admin/edit/safety': 'Per-age safety/feature matrix editor',
@@ -509,6 +511,7 @@ const DASHBOARD_HTML = /* html */ `<!doctype html>
     <a href="/admin/edit/scoring" style="color: var(--accent); text-decoration: none; margin: 0 4px;">Scoring</a>·
     <a href="/admin/edit/trade-rules" style="color: var(--accent); text-decoration: none; margin: 0 4px;">Trade rules</a>·
     <a href="/admin/edit/sports-config" style="color: var(--accent); text-decoration: none; margin: 0 4px;">Sports config</a>·
+    <a href="/admin/edit/scoring-trend" style="color: var(--accent); text-decoration: none; margin: 0 4px;">Scoring trend</a>·
     <a href="/admin/simulate" style="color: var(--accent); text-decoration: none; margin: 0 4px;">Simulate</a>
   </nav>
 
@@ -664,6 +667,24 @@ const DASHBOARD_HTML = /* html */ `<!doctype html>
     <h2>Last Run + Fairness Trend</h2>
     <div id="simulation-body">Loading…</div>
   </div>
+
+  <a class="card" id="scoring-trend-card"
+     href="/admin/edit/scoring-trend"
+     style="display:block;text-decoration:none;color:inherit;border:1px solid var(--border);">
+    <h2 style="display:flex;align-items:baseline;gap:8px;">
+      Scoring Trend
+      <span style="margin-left:auto;color:var(--muted);font-size:11px;text-transform:none;letter-spacing:0;">
+        last 7d roster_avg → click for full chart
+      </span>
+    </h2>
+    <div id="scoring-trend-body" style="display:flex;align-items:center;gap:14px;flex-wrap:wrap;">
+      <svg id="scoring-trend-spark" width="240" height="48" viewBox="0 0 240 48" style="flex:0 0 auto;">
+        <polyline id="scoring-trend-spark-line" fill="none" stroke="var(--accent)" stroke-width="2" points="" />
+        <polyline id="scoring-trend-spark-fill" fill="rgba(108,212,255,0.18)" stroke="none" points="" />
+      </svg>
+      <div id="scoring-trend-stats" style="font-size:12px;color:var(--muted);">Loading…</div>
+    </div>
+  </a>
 
   <div class="card" id="routes-card">
     <h2>Internal Routes</h2>
@@ -1534,6 +1555,55 @@ const DASHBOARD_HTML = /* html */ `<!doctype html>
       });
   }
 
+  function loadScoringTrend() {
+    fetch('/admin/api/scoring-trend?weeks=1', { cache: 'no-store' })
+      .then(r => r.json())
+      .then(j => {
+        const stats = el('scoring-trend-stats');
+        const line = document.getElementById('scoring-trend-spark-line');
+        const fill = document.getElementById('scoring-trend-spark-fill');
+        if (!j || !Array.isArray(j.days) || j.days.length === 0) {
+          if (stats) stats.innerHTML = '<span class="tag unmeasured">no trend data</span>';
+          return;
+        }
+        const days = j.days;
+        const w = 240, h = 48;
+        const ys = days.map(d => Number(d.roster_avg) || 0);
+        const max = Math.max(...ys, 1);
+        const min = Math.min(...ys, 0);
+        const span = Math.max(1, max - min);
+        const pts = ys.map((v, i) => {
+          const x = days.length === 1 ? w / 2 : (i / (days.length - 1)) * w;
+          const y = h - ((v - min) / span) * (h - 4) - 2;
+          return x.toFixed(1) + ',' + y.toFixed(1);
+        });
+        if (line) line.setAttribute('points', pts.join(' '));
+        if (fill) {
+          const fillPts = pts.slice();
+          fillPts.push(w + ',' + h);
+          fillPts.push('0,' + h);
+          fill.setAttribute('points', fillPts.join(' '));
+        }
+        const last = ys[ys.length - 1];
+        const first = ys[0];
+        const delta = last - first;
+        const sign = delta >= 0 ? '+' : '';
+        const deltaColor = Math.abs(delta) < 0.5 ? 'var(--muted)' : delta >= 0 ? 'var(--green)' : 'var(--red)';
+        if (stats) {
+          stats.innerHTML =
+            '<div><span class="k" style="color:var(--muted);">Today roster_avg:</span> <strong style="color:var(--text);">' +
+              (last != null ? last.toFixed(1) : '—') + ' PP</strong></div>' +
+            '<div><span class="k" style="color:var(--muted);">7d Δ:</span> <strong style="color:' + deltaColor + ';">' +
+              sign + delta.toFixed(1) + ' PP</strong></div>' +
+            '<div><span class="k" style="color:var(--muted);">Source:</span> <code>' + esc(j.source || '—') + '</code></div>';
+        }
+      })
+      .catch(() => {
+        const stats = el('scoring-trend-stats');
+        if (stats) stats.innerHTML = '<span class="tag unmeasured">fetch failed</span>';
+      });
+  }
+
   async function load() {
     try {
       const res = await fetch('/admin/status', { cache: 'no-store' });
@@ -1542,6 +1612,7 @@ const DASHBOARD_HTML = /* html */ `<!doctype html>
       el('error').innerHTML = '';
       render(json);
       loadSimulation();
+      loadScoringTrend();
       loadDocs();
       loadEditorTiles();
     } catch (err) {

@@ -1659,6 +1659,7 @@ export const SHARED_CRUMBS = /* html */ `
     <a href="/admin/edit/progression">Progression</a> ·
     <a href="/admin/edit/scoring">Scoring</a> ·
     <a href="/admin/edit/trade-rules">Trade rules</a> ·
+    <a href="/admin/edit/scoring-trend">Scoring trend</a> ·
     <a href="/admin/simulate">Simulate</a>
   </nav>
 `;
