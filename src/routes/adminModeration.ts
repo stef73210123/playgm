@@ -23,6 +23,7 @@
 
 import type { FastifyInstance } from 'fastify';
 import { supabase } from '../db/client.js';
+import { SHARED_SORTABLE_JS } from './adminEdit.js';
 
 type ModType = 'display_name' | 'team_name';
 
@@ -182,6 +183,10 @@ function renderQueuePage(): string {
   table { width: 100%; border-collapse: collapse; }
   th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid #edf2f7; vertical-align: middle; }
   th { font-size: 11px; text-transform: uppercase; letter-spacing: 0.4px; color: #4a5568; }
+  th.sortable { cursor: pointer; user-select: none; }
+  th.sortable:hover { color: #2b6cb0; }
+  th.sortable .sort-ind { display: inline-block; margin-left: 4px; opacity: 0.55; font-size: 10px; }
+  th.sortable.sort-asc .sort-ind, th.sortable.sort-desc .sort-ind { opacity: 1; color: #2b6cb0; }
   .pill { display: inline-block; padding: 2px 8px; border-radius: 12px; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.3px; }
   .pill.pending  { background: #fefcbf; color: #744210; }
   .pill.rejected { background: #fed7d7; color: #742a2a; }
@@ -216,18 +221,23 @@ function pill(cls, label) {
 }
 function row(item, type) {
   const id = item.id;
-  const candidate = (item.candidate ?? '').replace(/[<>&]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;'}[c]));
+  const candidateRaw = item.candidate ?? '';
+  const candidate = String(candidateRaw).replace(/[<>&]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;'}[c]));
   const status = item.status;
   const ageBand = item.age_band ?? 'unknown';
   const meta = type === 'display_name'
     ? '<code>' + (item.username ?? '—') + '</code>'
     : 'default: <code>' + (item.default_name ?? '—') + '</code>';
+  const candidateSort = String(candidateRaw).toLowerCase();
+  const submittedTs = new Date(item.submitted_at).getTime() || 0;
   return '<tr>' +
-    '<td><strong>' + candidate + '</strong></td>' +
+    '<td data-sort-value="' + candidateSort + '"><strong>' + candidate + '</strong></td>' +
     '<td>' + meta + '</td>' +
-    '<td>' + pill(status, status) + '</td>' +
-    (type === 'display_name' ? '<td>' + pill(ageBand, ageBand.replace('_', '-')) + '</td>' : '<td>—</td>') +
-    '<td>' + new Date(item.submitted_at).toLocaleString() + '</td>' +
+    '<td data-sort-value="' + status + '">' + pill(status, status) + '</td>' +
+    (type === 'display_name'
+      ? '<td data-sort-value="' + ageBand + '">' + pill(ageBand, ageBand.replace('_', '-')) + '</td>'
+      : '<td>—</td>') +
+    '<td data-sort-value="' + submittedTs + '">' + new Date(item.submitted_at).toLocaleString() + '</td>' +
     '<td>' +
       '<button class="approve" data-id="' + id + '" data-type="' + type + '" data-status="approved">Approve</button>' +
       '<button class="reject"  data-id="' + id + '" data-type="' + type + '" data-status="rejected">Reject</button>' +
@@ -239,11 +249,11 @@ function table(items, type, label) {
     return '<div class="empty">Nothing to review.</div>';
   }
   return '<table><thead><tr>' +
-    '<th>' + label + '</th>' +
+    '<th class="sortable">' + label + '</th>' +
     '<th>Context</th>' +
-    '<th>Status</th>' +
-    '<th>Age</th>' +
-    '<th>Submitted</th>' +
+    '<th class="sortable">Status</th>' +
+    '<th class="sortable">Age</th>' +
+    '<th class="sortable">Submitted</th>' +
     '<th>Action</th>' +
   '</tr></thead><tbody>' + items.map(it => row(it, type)).join('') + '</tbody></table>';
 }
@@ -266,5 +276,6 @@ async function load() {
 }
 load();
 </script>
+<script>${SHARED_SORTABLE_JS}</script>
 </body></html>`;
 }

@@ -1609,6 +1609,10 @@ export const SHARED_STYLE = /* css */ `
   table { width: 100%; border-collapse: collapse; font-size: 13px; }
   th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--border); vertical-align: top; }
   th { color: var(--muted); font-weight: 500; font-size: 12px; text-transform: uppercase; letter-spacing: 0.4px; }
+  th.sortable { cursor: pointer; user-select: none; }
+  th.sortable:hover { color: var(--accent); }
+  th.sortable .sort-ind { display: inline-block; margin-left: 4px; opacity: 0.55; font-size: 10px; }
+  th.sortable.sort-asc .sort-ind, th.sortable.sort-desc .sort-ind { opacity: 1; color: var(--accent); }
   tr.dirty { background: rgba(250,204,21,0.06); }
   td input, td select, td textarea {
     background: var(--card-2); color: var(--text); border: 1px solid var(--border);
@@ -1659,6 +1663,164 @@ export const SHARED_CRUMBS = /* html */ `
   </nav>
 `;
 
+/**
+ * Compute a sortable last-name key for a player display name.
+ *  - Splits on whitespace.
+ *  - Strips trailing suffixes (Jr/Sr/II/III/IV, with or without trailing dot).
+ *  - Returns the last remaining word, lowercased. Single-word names → as-is.
+ *
+ * "LeBron James" → "james". "Ken Griffey Jr." → "griffey". "Pelé" → "pelé".
+ */
+export function getSortName(fullName: string | null | undefined): string {
+  const raw = String(fullName ?? '').trim();
+  if (!raw) return '';
+  const SUFFIXES = new Set(['jr', 'jr.', 'sr', 'sr.', 'ii', 'iii', 'iv', 'v']);
+  const parts = raw.split(/\s+/);
+  while (parts.length > 1 && SUFFIXES.has(parts[parts.length - 1]!.toLowerCase())) {
+    parts.pop();
+  }
+  const last = parts[parts.length - 1] ?? '';
+  return last.toLowerCase();
+}
+
+/**
+ * Shared client-side sortable-table helper. Auto-attaches click handlers to
+ * any <th class="sortable"> in the page. On click it sorts the parent table's
+ * <tbody> rows by `data-sort-value` of the cell at that column index. A
+ * second click toggles asc/desc. Visual indicators (▲/▼/↕) live in the
+ * `.sort-ind` span, which is auto-injected if missing.
+ *
+ * Inputs:
+ *  - <th class="sortable">  — clickable header
+ *  - <td data-sort-value="…"> — sort key on each row in that column
+ *
+ * Single-row "expansion" rows (e.g. trivia editor's hidden detail row) are
+ * kept paired with their parent row by stable-sorting only "primary" rows
+ * (those that have a data-sort-value cell or any data-id) and then re-emitting
+ * any sibling rows that share a `data-id` immediately after their parent.
+ *
+ * Also exposes `window.__sortNameClient(fullName)` — the JS twin of the
+ * server-side `getSortName`, so dynamic renderers can compute keys inline.
+ */
+export const SHARED_SORTABLE_JS = /* javascript */ `
+(function(){
+  function getSortNameClient(fullName) {
+    var raw = String(fullName == null ? '' : fullName).trim();
+    if (!raw) return '';
+    var SUFFIXES = {'jr':1,'jr.':1,'sr':1,'sr.':1,'ii':1,'iii':1,'iv':1,'v':1};
+    var parts = raw.split(/\\s+/);
+    while (parts.length > 1 && SUFFIXES[parts[parts.length-1].toLowerCase()]) parts.pop();
+    return (parts[parts.length-1] || '').toLowerCase();
+  }
+  window.__sortNameClient = getSortNameClient;
+
+  function ensureIndicator(th) {
+    var ind = th.querySelector('.sort-ind');
+    if (!ind) {
+      ind = document.createElement('span');
+      ind.className = 'sort-ind';
+      ind.textContent = '↕';
+      th.appendChild(document.createTextNode(' '));
+      th.appendChild(ind);
+    }
+    return ind;
+  }
+  function setIndicator(th, dir) {
+    var ind = ensureIndicator(th);
+    ind.textContent = dir === 'asc' ? '▲' : dir === 'desc' ? '▼' : '↕';
+    th.classList.toggle('sort-asc', dir === 'asc');
+    th.classList.toggle('sort-desc', dir === 'desc');
+  }
+  function cellKey(tr, idx) {
+    var cells = tr.children;
+    if (idx >= cells.length) return '';
+    var td = cells[idx];
+    var v = td.getAttribute('data-sort-value');
+    if (v != null) return v;
+    return (td.textContent || '').trim().toLowerCase();
+  }
+  function sortTable(table, colIdx, dir) {
+    var tbody = table.tBodies[0];
+    if (!tbody) return;
+    var rows = Array.prototype.slice.call(tbody.rows);
+    // Group "child" rows (rows that share a data-id with the previous row OR
+    // explicitly carry class="exp") with their parent so they don't separate.
+    var groups = [];
+    var i = 0;
+    while (i < rows.length) {
+      var head = rows[i];
+      var grp = [head];
+      var headId = head.getAttribute('data-id');
+      var j = i + 1;
+      while (j < rows.length) {
+        var nxt = rows[j];
+        var nxtId = nxt.getAttribute('data-id');
+        var isChild = nxt.classList.contains('exp') ||
+          (headId && nxtId && nxtId === headId && nxt !== head &&
+            // Only treat as child if the head wasn't already an exp row.
+            !head.classList.contains('exp'));
+        if (isChild) { grp.push(nxt); j++; } else { break; }
+      }
+      groups.push(grp);
+      i = j;
+    }
+    var mult = dir === 'desc' ? -1 : 1;
+    groups.sort(function(a, b){
+      var av = cellKey(a[0], colIdx);
+      var bv = cellKey(b[0], colIdx);
+      // Numeric compare when both look numeric.
+      var an = parseFloat(av), bn = parseFloat(bv);
+      var bothNum = !isNaN(an) && !isNaN(bn) && String(an) === av && String(bn) === bv;
+      var cmp;
+      if (bothNum) cmp = an - bn;
+      else cmp = av < bv ? -1 : av > bv ? 1 : 0;
+      return cmp * mult;
+    });
+    var frag = document.createDocumentFragment();
+    groups.forEach(function(grp){ grp.forEach(function(r){ frag.appendChild(r); }); });
+    tbody.appendChild(frag);
+  }
+  function attachSortableHeaders(scope) {
+    var ths = (scope || document).querySelectorAll('th.sortable');
+    for (var k = 0; k < ths.length; k++) {
+      var th = ths[k];
+      if (th.__sortableWired) continue;
+      th.__sortableWired = true;
+      ensureIndicator(th);
+      (function(thRef){
+        thRef.addEventListener('click', function(){
+          var tr = thRef.parentElement;
+          if (!tr) return;
+          var idx = Array.prototype.indexOf.call(tr.children, thRef);
+          var table = thRef.closest('table');
+          if (!table || idx < 0) return;
+          // Determine current dir; toggle. Reset siblings.
+          var sibs = tr.querySelectorAll('th.sortable');
+          var curDir = thRef.classList.contains('sort-asc') ? 'asc'
+            : thRef.classList.contains('sort-desc') ? 'desc' : 'none';
+          for (var s = 0; s < sibs.length; s++) {
+            if (sibs[s] !== thRef) setIndicator(sibs[s], 'none');
+          }
+          var nextDir = curDir === 'asc' ? 'desc' : 'asc';
+          setIndicator(thRef, nextDir);
+          sortTable(table, idx, nextDir);
+        });
+      })(th);
+    }
+  }
+  // Initial pass plus a MutationObserver so dynamically rendered headers
+  // (e.g. the safety-matrix grid that fills <thead> after fetch) get wired.
+  function rescan(){ attachSortableHeaders(document); }
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', rescan);
+  } else {
+    rescan();
+  }
+  var mo = new MutationObserver(function(){ rescan(); });
+  mo.observe(document.documentElement, { childList: true, subtree: true });
+})();
+`;
+
 function renderPlayersPage(): string {
   return /* html */ `<!doctype html>
 <html lang="en"><head>
@@ -1685,7 +1847,7 @@ function renderPlayersPage(): string {
   <div class="card-block">
     <table id="tbl">
       <thead><tr>
-        <th>Name</th><th>Pos</th><th>#</th><th>Sport</th>
+        <th class="sortable">Name</th><th>Pos</th><th>#</th><th class="sortable">Sport</th>
         <th>Highlight URL</th><th>About URL</th><th>Actions</th>
       </tr></thead>
       <tbody></tbody>
@@ -1697,6 +1859,7 @@ function renderPlayersPage(): string {
     <button class="btn" id="next">Next ›</button>
   </div>
 </div>
+<script>${SHARED_SORTABLE_JS}</script>
 <script>${PLAYERS_JS}</script>
 </body></html>`;
 }
@@ -1726,7 +1889,7 @@ function renderTeamsPage(): string {
   <div class="card-block">
     <table id="tbl">
       <thead><tr>
-        <th>Team</th><th>Abbr</th><th>Sport</th>
+        <th class="sortable">Team</th><th class="sortable">Abbr</th><th class="sortable">Sport</th>
         <th>Highlight URL</th><th>About URL</th>
         <th>Recent (SportsDB)</th>
         <th>Actions</th>
@@ -1735,6 +1898,7 @@ function renderTeamsPage(): string {
     </table>
   </div>
 </div>
+<script>${SHARED_SORTABLE_JS}</script>
 <script>${TEAMS_JS}</script>
 </body></html>`;
 }
@@ -1757,8 +1921,8 @@ function renderCardsPage(): string {
   <div class="card-block">
     <table id="tbl">
       <thead><tr>
-        <th>ID</th><th>Name</th><th>Type</th><th>Rarity</th>
-        <th>Energy</th><th>Sport</th><th>Description (short)</th><th>Actions</th>
+        <th class="sortable">ID</th><th class="sortable">Name</th><th class="sortable">Type</th><th class="sortable">Rarity</th>
+        <th>Energy</th><th class="sortable">Sport</th><th>Description (short)</th><th>Actions</th>
       </tr></thead>
       <tbody></tbody>
     </table>
@@ -1782,6 +1946,7 @@ function renderCardsPage(): string {
     </details>
   </div>
 </div>
+<script>${SHARED_SORTABLE_JS}</script>
 <script>${CARDS_JS}</script>
 </body></html>`;
 }
@@ -1818,8 +1983,8 @@ function renderTriviaPage(): string {
   <div class="card-block">
     <table id="tbl">
       <thead><tr>
-        <th>ID</th><th>Sport</th><th>Diff</th><th>Cat</th>
-        <th>Question</th><th>Actions</th>
+        <th class="sortable">ID</th><th class="sortable">Sport</th><th class="sortable">Diff</th><th class="sortable">Cat</th>
+        <th class="sortable">Question</th><th>Actions</th>
       </tr></thead>
       <tbody></tbody>
     </table>
@@ -1830,6 +1995,7 @@ function renderTriviaPage(): string {
     <button class="btn" id="next">Next ›</button>
   </div>
 </div>
+<script>${SHARED_SORTABLE_JS}</script>
 <script>${TRIVIA_JS}</script>
 </body></html>`;
 }
@@ -1857,10 +2023,10 @@ const PLAYERS_JS = /* javascript */ `
     const tbody = el('tbl').querySelector('tbody');
     tbody.innerHTML = json.items.map(p => \`
       <tr data-id="\${esc(p.id)}">
-        <td>\${esc(p.full_name)}</td>
+        <td data-sort-value="\${esc(window.__sortNameClient ? window.__sortNameClient(p.full_name) : String(p.full_name||'').toLowerCase())}">\${esc(p.full_name)}</td>
         <td>\${esc(p.position||'')}</td>
         <td>\${esc(p.jersey_number||'')}</td>
-        <td>\${esc(p.sport)}</td>
+        <td data-sort-value="\${esc(String(p.sport||'').toLowerCase())}">\${esc(p.sport)}</td>
         <td><input class="hl" value="\${esc(p.video_highlight_url)}" placeholder="https://…" /></td>
         <td><input class="ab" value="\${esc(p.video_about_url)}" placeholder="https://…" /></td>
         <td class="row-actions"><button class="btn primary save">Save</button><div class="hint status"></div></td>
@@ -1923,9 +2089,9 @@ const TEAMS_JS = /* javascript */ `
           ).join('');
       const pulledAt = t.video_highlight_pulled_at ? '<div class="muted hint">pulled ' + esc(t.video_highlight_pulled_at.slice(0,10)) + '</div>' : '';
       return '<tr data-id="' + esc(t.id) + '" data-ext="' + esc(t.external_id||'') + '">' +
-        '<td>' + esc(t.full_name) + '</td>' +
-        '<td>' + esc(t.abbreviation||'') + '</td>' +
-        '<td>' + esc(t.sport) + '</td>' +
+        '<td data-sort-value="' + esc(String(t.full_name||'').toLowerCase()) + '">' + esc(t.full_name) + '</td>' +
+        '<td data-sort-value="' + esc(String(t.abbreviation||'').toLowerCase()) + '">' + esc(t.abbreviation||'') + '</td>' +
+        '<td data-sort-value="' + esc(String(t.sport||'').toLowerCase()) + '">' + esc(t.sport) + '</td>' +
         '<td><input class="hl" value="' + esc(t.video_highlight_url) + '" placeholder="https://…" />' + pulledAt + '</td>' +
         '<td><input class="ab" value="' + esc(t.video_about_url) + '" placeholder="https://…" /></td>' +
         '<td class="recent-cell">' + recentHtml + '</td>' +
@@ -1999,12 +2165,12 @@ const CARDS_JS = /* javascript */ `
     const tbody = el('tbl').querySelector('tbody');
     tbody.innerHTML = json.items.map(c => \`
       <tr data-id="\${esc(c.template_id)}" \${c.retired?'class="dirty"':''}>
-        <td><code>\${esc(c.template_id)}</code>\${c.retired?' <span class="tag">retired</span>':''}</td>
-        <td><input class="f-name" value="\${esc(c.name)}" /></td>
-        <td><select class="f-card_type">\${opt(CARD_TYPES, c.card_type)}</select></td>
-        <td><select class="f-rarity">\${opt(RARITIES, c.rarity)}</select></td>
+        <td data-sort-value="\${esc(String(c.template_id||'').toLowerCase())}"><code>\${esc(c.template_id)}</code>\${c.retired?' <span class="tag">retired</span>':''}</td>
+        <td data-sort-value="\${esc(String(c.name||'').toLowerCase())}"><input class="f-name" value="\${esc(c.name)}" /></td>
+        <td data-sort-value="\${esc(String(c.card_type||'').toLowerCase())}"><select class="f-card_type">\${opt(CARD_TYPES, c.card_type)}</select></td>
+        <td data-sort-value="\${esc(String(c.rarity||'').toLowerCase())}"><select class="f-rarity">\${opt(RARITIES, c.rarity)}</select></td>
         <td><input class="f-energy_cost" type="number" min="1" max="4" value="\${esc(c.energy_cost)}" /></td>
-        <td><select class="f-sport">\${opt(CARD_SPORTS, c.sport)}</select></td>
+        <td data-sort-value="\${esc(String(c.sport||'').toLowerCase())}"><select class="f-sport">\${opt(CARD_SPORTS, c.sport)}</select></td>
         <td><input class="f-desc_short" value="\${esc((c.display||{}).description_short||'')}" /></td>
         <td class="row-actions">
           <button class="btn primary save">Save</button>
@@ -2103,11 +2269,11 @@ const TRIVIA_JS = /* javascript */ `
     const tbody = el('tbl').querySelector('tbody');
     tbody.innerHTML = json.items.map(q => \`
       <tr data-id="\${esc(q.id)}">
-        <td><code>\${esc(q.id)}</code>\${q.retired?' <span class="tag">retired</span>':''}</td>
-        <td>\${esc(q.sport)}</td>
-        <td>\${esc(q.difficulty)}</td>
-        <td>\${esc(q.category)}</td>
-        <td>\${esc(q.question)}</td>
+        <td data-sort-value="\${esc(String(q.id||'').toLowerCase())}"><code>\${esc(q.id)}</code>\${q.retired?' <span class="tag">retired</span>':''}</td>
+        <td data-sort-value="\${esc(String(q.sport||'').toLowerCase())}">\${esc(q.sport)}</td>
+        <td data-sort-value="\${esc(String(q.difficulty||'').toLowerCase())}">\${esc(q.difficulty)}</td>
+        <td data-sort-value="\${esc(String(q.category||'').toLowerCase())}">\${esc(q.category)}</td>
+        <td data-sort-value="\${esc(String(q.question||'').toLowerCase())}">\${esc(q.question)}</td>
         <td class="row-actions">
           <button class="btn edit">Edit</button>
           \${q.retired?'':'<button class="btn danger del">Retire</button>'}
@@ -2223,6 +2389,7 @@ function renderAdvertisingPage(): string {
   </div>
   <div id="ad-channels" class="muted">Loading channels…</div>
 </div>
+<script>${SHARED_SORTABLE_JS}</script>
 <script>${ADVERTISING_JS}</script>
 </body></html>`;
 }
@@ -2404,6 +2571,7 @@ function renderSafetyPage(): string {
     <div id="uso-results"></div>
   </div>
 </div>
+<script>${SHARED_SORTABLE_JS}</script>
 <script>${SAFETY_JS}</script>
 </body></html>`;
 }
@@ -2434,12 +2602,12 @@ const SAFETY_JS = /* javascript */ `
     el('meta').innerHTML = '<code>v' + esc(json.version) + '</code> · ' + esc(json.features.length) + ' features · ages ' + esc(json.age_range.min) + '–' + esc(json.age_range.max) + ' · last edited <code>' + esc(new Date(json.last_updated_iso).toLocaleString()) + '</code>';
 
     // Compact grid: rows = features, cols = ages 5..14
-    const head = ['<th style="text-align:left;">feature</th>'].concat(AGES.map(a => '<th>' + a + '</th>')).join('');
+    const head = ['<th class="sortable" style="text-align:left;">feature</th>'].concat(AGES.map(a => '<th>' + a + '</th>')).join('');
     el('matrix-grid-head').innerHTML = head;
     const body = el('matrix-grid').querySelector('tbody');
     body.innerHTML = json.features.map(f =>
       '<tr class="ages" data-id="' + esc(f.feature_id) + '">' +
-        '<td style="text-align:left;"><a href="#feat-' + esc(f.feature_id) + '" style="color:var(--accent);text-decoration:none;">' + esc(f.label) + '</a></td>' +
+        '<td data-sort-value="' + esc(String(f.label||'').toLowerCase()) + '" style="text-align:left;"><a href="#feat-' + esc(f.feature_id) + '" style="color:var(--accent);text-decoration:none;">' + esc(f.label) + '</a></td>' +
         AGES.map(age => {
           const d = decideForAge(f, age);
           return '<td class="' + classFor(d) + '" title="' + esc(d) + '">' + symFor(d) + '</td>';
@@ -2733,9 +2901,9 @@ function renderSfxPage(): string {
     <table id="tbl">
       <thead><tr>
         <th style="width:34px;">▶</th>
-        <th>Name</th>
-        <th>ID</th>
-        <th>Category</th>
+        <th class="sortable">Name</th>
+        <th class="sortable">ID</th>
+        <th class="sortable">Category</th>
         <th>Volume</th>
         <th>Enabled</th>
         <th>Replace file (upload or URL)</th>
@@ -2783,6 +2951,7 @@ function renderSfxPage(): string {
     </details>
   </div>
 </div>
+<script>${SHARED_SORTABLE_JS}</script>
 <script>${SFX_JS}</script>
 </body></html>`;
 }
@@ -2833,9 +3002,9 @@ const SFX_JS = /* javascript */ `
             '<button class="btn preview-btn" title="Preview" data-act="preview">▶</button>' +
             '<audio preload="none" src="' + esc(url) + '"></audio>' +
           '</td>' +
-          '<td><input class="f-name" value="' + esc(s.name) + '" /></td>' +
-          '<td><code>' + esc(s.id) + '</code></td>' +
-          '<td>' +
+          '<td data-sort-value="' + esc(String(s.name||'').toLowerCase()) + '"><input class="f-name" value="' + esc(s.name) + '" /></td>' +
+          '<td data-sort-value="' + esc(String(s.id||'').toLowerCase()) + '"><code>' + esc(s.id) + '</code></td>' +
+          '<td data-sort-value="' + esc(String(s.category||'').toLowerCase()) + '">' +
             '<select class="f-category">' + catOpts + '</select>' +
             '<div class="hint"><span class="cat-tag ' + esc(s.category) + '">' + esc(s.category) + '</span></div>' +
           '</td>' +

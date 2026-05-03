@@ -22,6 +22,7 @@ import {
   PROJECT_ROOT,
   SHARED_STYLE,
   SHARED_CRUMBS,
+  SHARED_SORTABLE_JS,
   autoCommit,
   badRequest,
   type ValidationError,
@@ -106,6 +107,15 @@ function validateFormulaPatch(body: Record<string, unknown>): ValidationError[] 
           const v = block['games_per_week'];
           if (!isFiniteNum(v) || (v as number) <= 0) {
             errs.push({ field: `by_sport.${sport}.games_per_week`, message: 'must be positive number' });
+          }
+        }
+        if (block['per_sport_multiplier'] !== undefined) {
+          const v = block['per_sport_multiplier'];
+          if (!isFiniteNum(v) || (v as number) <= 0) {
+            errs.push({
+              field: `by_sport.${sport}.per_sport_multiplier`,
+              message: 'must be positive number',
+            });
           }
         }
       }
@@ -194,6 +204,7 @@ function pageHtml(title: string, h1: string, bodyInner: string, scriptJs: string
   </header>
   ${bodyInner}
 </div>
+<script>${SHARED_SORTABLE_JS}</script>
 <script>${scriptJs}</script>
 </body></html>`;
 }
@@ -430,6 +441,7 @@ const SCORING_JS = /* javascript */ `
         html += weightTable('by_sport.' + sport + '.weights', block.weights);
       }
       html += '<div style="margin-top:8px;font-size:13px;">games per week: <input type="number" step="0.1" min="0" data-path="by_sport.' + sport + '.games_per_week" value="' + (block.games_per_week ?? '') + '" style="width:80px;" /></div>';
+      html += '<div style="margin-top:6px;font-size:13px;" title="Inverse-scale factor that converges per-game-day median PP across sports — see docs/scoring-balance-2026-05-02.md">per-sport multiplier: <input type="number" step="0.001" min="0" data-path="by_sport.' + sport + '.per_sport_multiplier" value="' + (block.per_sport_multiplier ?? 1) + '" style="width:100px;" /></div>';
       html += '</div>';
     }
     const g = doc.global;

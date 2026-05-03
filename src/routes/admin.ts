@@ -38,6 +38,7 @@ import {
   getSafetyMatrixSummary,
   loadSafetyMatrix,
 } from '../services/safetyMatrix.js';
+import { SHARED_SORTABLE_JS } from './adminEdit.js';
 
 function findProjectRoot(): string {
   const cwd = process.cwd();
@@ -449,6 +450,10 @@ const DASHBOARD_HTML = /* html */ `<!doctype html>
   table { width: 100%; border-collapse: collapse; font-size: 13px; }
   th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--border); }
   th { color: var(--muted); font-weight: 500; font-size: 12px; }
+  th.sortable { cursor: pointer; user-select: none; }
+  th.sortable:hover { color: var(--accent); }
+  th.sortable .sort-ind { display: inline-block; margin-left: 4px; opacity: 0.55; font-size: 10px; }
+  th.sortable.sort-asc .sort-ind, th.sortable.sort-desc .sort-ind { opacity: 1; color: var(--accent); }
   details { margin-top: 4px; }
   summary { cursor: pointer; color: var(--accent); font-size: 13px; padding: 4px 0; }
   pre { font-size: 12px; color: var(--muted); margin: 0; white-space: pre-wrap; word-break: break-word; }
@@ -872,12 +877,12 @@ const DASHBOARD_HTML = /* html */ `<!doctype html>
     const routes = s.internal_routes || [];
     el('route-count').textContent = routes.length;
     el('routes-body').innerHTML = \`<table>
-      <thead><tr><th>Method</th><th>Path</th><th>Purpose</th></tr></thead>
+      <thead><tr><th class="sortable">Method</th><th class="sortable">Path</th><th class="sortable">Purpose</th></tr></thead>
       <tbody>
         \${routes.map(r => \`<tr>
-          <td><code>\${esc(r.method)}</code></td>
-          <td><code>\${esc(r.path)}</code></td>
-          <td style="color:var(--muted)">\${esc(r.purpose)}</td>
+          <td data-sort-value="\${esc(String(r.method||'').toLowerCase())}"><code>\${esc(r.method)}</code></td>
+          <td data-sort-value="\${esc(String(r.path||'').toLowerCase())}"><code>\${esc(r.path)}</code></td>
+          <td data-sort-value="\${esc(String(r.purpose||'').toLowerCase())}" style="color:var(--muted)">\${esc(r.purpose)}</td>
         </tr>\`).join('')}
       </tbody>
     </table>\`;
@@ -1633,6 +1638,7 @@ const DASHBOARD_HTML = /* html */ `<!doctype html>
   setInterval(tick, 1000);
 })();
 </script>
+<script>${SHARED_SORTABLE_JS}</script>
 </body>
 </html>
 `;

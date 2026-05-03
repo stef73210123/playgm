@@ -22,6 +22,7 @@ import {
   PROJECT_ROOT,
   SHARED_STYLE,
   SHARED_CRUMBS,
+  SHARED_SORTABLE_JS,
   autoCommit,
   badRequest,
   notFound,
@@ -836,6 +837,7 @@ function pageHtml(title: string, h1: string, bodyInner: string, scriptJs: string
   </header>
   ${bodyInner}
 </div>
+<script>${SHARED_SORTABLE_JS}</script>
 <script>${scriptJs}</script>
 </body></html>`;
 }
@@ -868,7 +870,7 @@ export async function adminEditConfigRoutes(fastify: FastifyInstance): Promise<v
       <div class="card-block">
         <table id="tbl">
           <thead><tr>
-            <th>Pack ID</th><th>Name</th><th>PP Cost</th><th>Cards</th>
+            <th class="sortable">Pack ID</th><th class="sortable">Name</th><th>PP Cost</th><th>Cards</th>
             <th>Drop rates (c/u/r/e/l)</th><th>Diversity</th><th>Bonus token</th><th>Actions</th>
           </tr></thead>
           <tbody></tbody>
@@ -991,7 +993,7 @@ export async function adminEditConfigRoutes(fastify: FastifyInstance): Promise<v
       <div class="card-block" style="overflow-x:auto;">
         <table id="tbl">
           <thead><tr>
-            <th>Tier</th><th>Name</th><th>$/mo</th><th>Rosters/wk</th>
+            <th class="sortable">Tier</th><th class="sortable">Name</th><th class="sortable">$/mo</th><th>Rosters/wk</th>
             <th>Drafts/day</th><th>Cap mode</th><th>Draft modes</th>
             <th>FA pool/wk</th><th>Slot picker</th><th>Family max</th>
             <th>Inv cap</th><th>PP daily</th><th>Scout cap</th><th>Card scan cap</th>
@@ -1047,7 +1049,7 @@ export async function adminEditConfigRoutes(fastify: FastifyInstance): Promise<v
       <div class="card-block">
         <table id="tbl">
           <thead><tr>
-            <th>Day</th><th>Pack</th><th>Bonus PP</th><th>Bonus Tokens</th><th></th>
+            <th class="sortable">Day</th><th class="sortable">Pack</th><th>Bonus PP</th><th>Bonus Tokens</th><th></th>
           </tr></thead>
           <tbody></tbody>
         </table>
@@ -1110,8 +1112,8 @@ export async function adminEditConfigRoutes(fastify: FastifyInstance): Promise<v
       <div class="card-block">
         <table id="tbl">
           <thead><tr>
-            <th>ID</th><th>Name</th><th>Description</th>
-            <th>Data required (csv)</th><th>Rate</th><th>Actions</th>
+            <th class="sortable">ID</th><th class="sortable">Name</th><th>Description</th>
+            <th>Data required (csv)</th><th class="sortable">Rate</th><th>Actions</th>
           </tr></thead>
           <tbody></tbody>
         </table>
@@ -1222,8 +1224,8 @@ export async function adminEditConfigRoutes(fastify: FastifyInstance): Promise<v
       <div class="card-block">
         <table id="tbl">
           <thead><tr>
-            <th>ID</th><th>Description</th><th>Threshold</th>
-            <th>Tracking unit</th><th>Guarantee</th><th>Reset on</th><th>Actions</th>
+            <th class="sortable">ID</th><th>Description</th><th class="sortable">Threshold</th>
+            <th class="sortable">Tracking unit</th><th class="sortable">Guarantee</th><th class="sortable">Reset on</th><th>Actions</th>
           </tr></thead>
           <tbody></tbody>
         </table>
@@ -1269,7 +1271,7 @@ export async function adminEditConfigRoutes(fastify: FastifyInstance): Promise<v
       <div class="card-block">
         <table id="tbl">
           <thead><tr>
-            <th>Level</th><th>Name</th><th>PP threshold</th><th>Color (#hex)</th>
+            <th class="sortable">Level</th><th class="sortable">Name</th><th class="sortable">PP threshold</th><th>Color (#hex)</th>
           </tr></thead>
           <tbody></tbody>
         </table>
@@ -1533,8 +1535,8 @@ export async function adminEditConfigRoutes(fastify: FastifyInstance): Promise<v
       <div class="card-block">
         <table id="tbl">
           <thead><tr>
-            <th>Sport ID</th><th>Label</th><th>League</th>
-            <th>Enabled</th><th>Disabled reason</th><th>Actions</th>
+            <th class="sortable">Sport ID</th><th class="sortable">Label</th><th class="sortable">League</th>
+            <th class="sortable">Enabled</th><th>Disabled reason</th><th>Actions</th>
           </tr></thead>
           <tbody></tbody>
         </table>
@@ -1622,8 +1624,8 @@ const PACKS_JS = /* javascript */ `
       const dr = p.drop_rates || {};
       const drStr = RARS.map(r => (dr[r] ?? 0)).join(',');
       return '<tr data-id="' + esc(p.pack_id) + '">' +
-        '<td><code>' + esc(p.pack_id) + '</code></td>' +
-        '<td><input class="name" value="' + esc(p.name) + '" /></td>' +
+        '<td data-sort-value="' + esc(String(p.pack_id||'').toLowerCase()) + '"><code>' + esc(p.pack_id) + '</code></td>' +
+        '<td data-sort-value="' + esc(String(p.name||'').toLowerCase()) + '"><input class="name" value="' + esc(p.name) + '" /></td>' +
         '<td><input class="ppcost" value="' + (p.pp_cost == null ? '' : p.pp_cost) + '" placeholder="null" /></td>' +
         '<td><input class="cards" type="number" min="1" value="' + p.card_count + '" /></td>' +
         '<td><input class="dr" value="' + drStr + '" placeholder="c,u,r,e,l" /></td>' +
@@ -1858,9 +1860,9 @@ const SUBSCRIPTIONS_JS = /* javascript */ `
     const tradeCap = (t.trade_cap_per_season ?? -1);
     const notes = t.notes ?? '';
     return '<tr data-id="' + esc(t.tier_id) + '">' +
-      '<td><code>' + esc(t.tier_id) + '</code></td>' +
-      '<td><input class="name" value="' + esc(t.name) + '" /></td>' +
-      '<td><input class="price" type="number" min="0" step="0.01" value="' + t.monthly_price_usd + '" style="width:80px;" /></td>' +
+      '<td data-sort-value="' + esc(String(t.tier_id||'').toLowerCase()) + '"><code>' + esc(t.tier_id) + '</code></td>' +
+      '<td data-sort-value="' + esc(String(t.name||'').toLowerCase()) + '"><input class="name" value="' + esc(t.name) + '" /></td>' +
+      '<td data-sort-value="' + Number(t.monthly_price_usd) + '"><input class="price" type="number" min="0" step="0.01" value="' + t.monthly_price_usd + '" style="width:80px;" /></td>' +
       '<td><input class="rpw" type="number" min="0" value="' + t.rosters_per_week + '" style="width:60px;" /></td>' +
       '<td><input class="dpw" type="number" min="-1" value="' + t.practice_drafts_per_day + '" style="width:60px;" title="-1 = unlimited" /></td>' +
       '<td><input class="cap" type="checkbox" ' + (t.cap_mode?'checked':'') + ' /></td>' +
@@ -1943,8 +1945,8 @@ const STREAKS_JS = /* javascript */ `
   function rowHtml(r) {
     const opts = validIds.map(id => '<option' + (id===r.pack_id?' selected':'') + '>' + esc(id) + '</option>').join('');
     return '<tr>' +
-      '<td><input class="day" type="number" min="1" value="' + r.day + '" style="width:80px;" /></td>' +
-      '<td><select class="pack">' + opts + '</select></td>' +
+      '<td data-sort-value="' + Number(r.day) + '"><input class="day" type="number" min="1" value="' + r.day + '" style="width:80px;" /></td>' +
+      '<td data-sort-value="' + esc(String(r.pack_id||'').toLowerCase()) + '"><select class="pack">' + opts + '</select></td>' +
       '<td><input class="pp" type="number" min="0" value="' + r.bonus_pp + '" style="width:90px;" /></td>' +
       '<td><input class="tok" type="number" min="0" value="' + r.bonus_tokens + '" style="width:90px;" /></td>' +
       '<td><button class="btn danger del">×</button></td>' +
@@ -1995,11 +1997,11 @@ const TRIGGERS_JS = /* javascript */ `
     const tbody = document.querySelector('#tbl tbody');
     tbody.innerHTML = j.items.map(t =>
       '<tr data-id="' + esc(t.trigger_id) + '">' +
-        '<td><code>' + esc(t.trigger_id) + '</code></td>' +
-        '<td><input class="name" value="' + esc(t.name) + '" /></td>' +
+        '<td data-sort-value="' + esc(String(t.trigger_id||'').toLowerCase()) + '"><code>' + esc(t.trigger_id) + '</code></td>' +
+        '<td data-sort-value="' + esc(String(t.name||'').toLowerCase()) + '"><input class="name" value="' + esc(t.name) + '" /></td>' +
         '<td><textarea class="desc">' + esc(t.description) + '</textarea></td>' +
         '<td><input class="dr" value="' + esc((t.data_required||[]).join(',')) + '" /></td>' +
-        '<td><input class="rate" type="number" step="0.01" min="0" max="1" value="' + t.approximate_trigger_rate + '" style="width:80px;" /></td>' +
+        '<td data-sort-value="' + Number(t.approximate_trigger_rate) + '"><input class="rate" type="number" step="0.01" min="0" max="1" value="' + t.approximate_trigger_rate + '" style="width:80px;" /></td>' +
         '<td><button class="btn primary save">Save</button><div class="hint status"></div></td>' +
       '</tr>'
     ).join('');
@@ -2070,12 +2072,12 @@ const PITY_JS = /* javascript */ `
     const tbody = document.querySelector('#tbl tbody');
     tbody.innerHTML = j.items.map(t =>
       '<tr data-id="' + esc(t.id) + '">' +
-        '<td><code>' + esc(t.id) + '</code></td>' +
+        '<td data-sort-value="' + esc(String(t.id||'').toLowerCase()) + '"><code>' + esc(t.id) + '</code></td>' +
         '<td><textarea class="desc">' + esc(t.description) + '</textarea></td>' +
-        '<td><input class="th" type="number" min="1" value="' + t.trigger_threshold + '" style="width:80px;" /></td>' +
-        '<td><input class="tu" value="' + esc(t.tracking_unit) + '" /></td>' +
-        '<td><input class="g" value="' + esc(t.guarantee) + '" /></td>' +
-        '<td><input class="r" value="' + esc(t.reset_on) + '" /></td>' +
+        '<td data-sort-value="' + Number(t.trigger_threshold) + '"><input class="th" type="number" min="1" value="' + t.trigger_threshold + '" style="width:80px;" /></td>' +
+        '<td data-sort-value="' + esc(String(t.tracking_unit||'').toLowerCase()) + '"><input class="tu" value="' + esc(t.tracking_unit) + '" /></td>' +
+        '<td data-sort-value="' + esc(String(t.guarantee||'').toLowerCase()) + '"><input class="g" value="' + esc(t.guarantee) + '" /></td>' +
+        '<td data-sort-value="' + esc(String(t.reset_on||'').toLowerCase()) + '"><input class="r" value="' + esc(t.reset_on) + '" /></td>' +
         '<td><button class="btn primary save">Save</button><div class="hint status"></div></td>' +
       '</tr>'
     ).join('');
@@ -2109,9 +2111,9 @@ const PROGRESSION_JS = /* javascript */ `
     const tbody = document.querySelector('#tbl tbody');
     tbody.innerHTML = j.doc.tiers.map(t =>
       '<tr>' +
-        '<td><input class="lvl" type="number" min="1" max="13" value="' + t.level + '" style="width:60px;" /></td>' +
-        '<td><input class="name" value="' + esc(t.name) + '" /></td>' +
-        '<td><input class="th" type="number" min="0" value="' + t.pp_threshold + '" /></td>' +
+        '<td data-sort-value="' + Number(t.level) + '"><input class="lvl" type="number" min="1" max="13" value="' + t.level + '" style="width:60px;" /></td>' +
+        '<td data-sort-value="' + esc(String(t.name||'').toLowerCase()) + '"><input class="name" value="' + esc(t.name) + '" /></td>' +
+        '<td data-sort-value="' + Number(t.pp_threshold) + '"><input class="th" type="number" min="0" value="' + t.pp_threshold + '" /></td>' +
         '<td><input class="color" value="' + esc(t.color) + '" placeholder="#RRGGBB" style="width:90px;" /></td>' +
       '</tr>'
     ).join('');
@@ -2313,10 +2315,10 @@ const SPORTS_CONFIG_JS = /* javascript */ `
       const enabled = !!s.enabled;
       const reason = s.disabled_reason || '';
       return '<tr data-id="' + esc(s.id) + '">' +
-        '<td><code>' + esc(s.id) + '</code></td>' +
-        '<td><input class="label" value="' + esc(s.label) + '" maxlength="40" /></td>' +
-        '<td><input class="league" value="' + esc(s.league) + '" maxlength="20" style="width:80px;" /></td>' +
-        '<td style="text-align:center;"><input class="enabled" type="checkbox" ' + (enabled ? 'checked' : '') + ' /></td>' +
+        '<td data-sort-value="' + esc(String(s.id||'').toLowerCase()) + '"><code>' + esc(s.id) + '</code></td>' +
+        '<td data-sort-value="' + esc(String(s.label||'').toLowerCase()) + '"><input class="label" value="' + esc(s.label) + '" maxlength="40" /></td>' +
+        '<td data-sort-value="' + esc(String(s.league||'').toLowerCase()) + '"><input class="league" value="' + esc(s.league) + '" maxlength="20" style="width:80px;" /></td>' +
+        '<td data-sort-value="' + (enabled ? '1' : '0') + '" style="text-align:center;"><input class="enabled" type="checkbox" ' + (enabled ? 'checked' : '') + ' /></td>' +
         '<td><textarea class="reason" rows="1" placeholder="(only used when disabled)" style="width:100%;min-width:200px;">' + esc(reason) + '</textarea></td>' +
         '<td><button class="btn primary save">Save</button><div class="hint status"></div></td>' +
       '</tr>';
