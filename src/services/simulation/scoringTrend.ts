@@ -68,17 +68,22 @@ export const SPORT_GAME_DAYS: Record<Sport, number[]> = {
   soccer: [0, 3, 6], // Sun/Wed/Sat
 };
 
+export type Granularity = 'daily' | 'weekly';
+
 export interface DayPoint {
-  /** ISO date (YYYY-MM-DD) in UTC. */
+  /** ISO date (YYYY-MM-DD) in UTC. For weekly buckets this is the Monday of the week. */
   date: string;
-  /** Per-sport per-roster PP contribution. Keys are sport ids (nfl/nba/mlb/nhl/mls). */
+  /** Per-sport per-roster PP contribution. Keys are sport ids (nfl/nba/mlb/nhl/mls).
+   *  - daily: per-game-day contribution from that sport (or 0/missing if no game).
+   *  - weekly: sum of all daily contributions for that sport across the 7-day bucket. */
   by_sport: Partial<Record<SportId, number>>;
-  /** Sum across enabled sports for this date. */
+  /** Sum across enabled sports for this point. Daily = single-day total, weekly = 7-day sum. */
   roster_avg: number;
 }
 
 export interface ScoringTrendResponse {
   weeks: number;
+  granularity: Granularity;
   generated_at: string;
   source: 'simulation_runs' | 'projection_fallback';
   source_run_id?: string;
@@ -88,13 +93,13 @@ export interface ScoringTrendResponse {
 }
 
 interface CacheEntry {
-  weeks: number;
   expiresAt: number;
   payload: ScoringTrendResponse;
 }
 
 const CACHE_TTL_MS = 5 * 60 * 1000;
-const cache = new Map<number, CacheEntry>();
+/** Cache key is `${weeks}|${granularity}` so daily + weekly views don't share entries. */
+const cache = new Map<string, CacheEntry>();
 
 /** Drop the cache (used by tests). */
 export function _resetTrendCache(): void {
@@ -228,9 +233,64 @@ function projectWeeklyPerSport(formula: ScoringFormulaFile): Map<Sport, number> 
 
 // ─── Public: build the trend ─────────────────────────────────────────────
 
-export async function buildScoringTrend(weeks: number): Promise<ScoringTrendResponse> {
+/** Monday-of-week (UTC) as YYYY-MM-DD. ISO weeks start Monday. */
+function isoWeekStartUTC(d: Date): string {
+  const dow = d.getUTCDay(); // 0=Sun..6=Sat
+  const offsetToMonday = (dow + 6) % 7; // Mon→0, Tue→1, …, Sun→6
+  const monday = new Date(d.getTime() - offsetToMonday * 86400_000);
+  monday.setUTCHours(0, 0, 0, 0);
+  return isoDateUTC(monday);
+}
+
+/** Bucket a daily series by ISO week, summing each sport's contribution
+ *  and `roster_avg` across the 7 days of each bucket.
+ *
+ *  Per Stefan: weekly mode shows the *total* week's per-sport contribution,
+ *  not an average — it's a sum over the 7 days. roster_avg follows suit:
+ *  it's the sum of daily roster_avgs in that bucket. */
+function bucketByISOWeek(daily: DayPoint[]): DayPoint[] {
+  const buckets = new Map<
+    string,
+    { by_sport: Partial<Record<SportId, number>>; roster_avg: number }
+  >();
+  for (const day of daily) {
+    const key = isoWeekStartUTC(new Date(day.date + 'T00:00:00Z'));
+    let b = buckets.get(key);
+    if (!b) {
+      b = { by_sport: {}, roster_avg: 0 };
+      buckets.set(key, b);
+    }
+    for (const [sportId, value] of Object.entries(day.by_sport)) {
+      if (typeof value !== 'number') continue;
+      const id = sportId as SportId;
+      b.by_sport[id] = (b.by_sport[id] ?? 0) + value;
+    }
+    b.roster_avg += day.roster_avg;
+  }
+  const out: DayPoint[] = [];
+  for (const [date, b] of buckets) {
+    const rounded: Partial<Record<SportId, number>> = {};
+    for (const [k, v] of Object.entries(b.by_sport)) {
+      if (typeof v === 'number') rounded[k as SportId] = Math.round(v * 100) / 100;
+    }
+    out.push({
+      date,
+      by_sport: rounded,
+      roster_avg: Math.round(b.roster_avg * 100) / 100,
+    });
+  }
+  out.sort((a, b) => a.date.localeCompare(b.date));
+  return out;
+}
+
+export async function buildScoringTrend(
+  weeks: number,
+  granularity: Granularity = 'daily',
+): Promise<ScoringTrendResponse> {
   const w = Math.max(1, Math.min(52, Math.floor(weeks) || 8));
-  const cached = cache.get(w);
+  const g: Granularity = granularity === 'weekly' ? 'weekly' : 'daily';
+  const cacheKey = `${w}|${g}`;
+  const cached = cache.get(cacheKey);
   if (cached && cached.expiresAt > Date.now()) return cached.payload;
 
   const formula = loadScoringFormula();
@@ -301,16 +361,19 @@ export async function buildScoringTrend(weeks: number): Promise<ScoringTrendResp
     });
   }
 
+  const points: DayPoint[] = g === 'weekly' ? bucketByISOWeek(days) : days;
+
   const payload: ScoringTrendResponse = {
     weeks: w,
+    granularity: g,
     generated_at: new Date().toISOString(),
     source,
     ...(runId ? { source_run_id: runId } : {}),
     ...(runCompletedAt ? { source_run_completed_at: runCompletedAt } : {}),
     enabled_sports: enabledSportIds,
-    days,
+    days: points,
   };
 
-  cache.set(w, { weeks: w, expiresAt: Date.now() + CACHE_TTL_MS, payload });
+  cache.set(cacheKey, { expiresAt: Date.now() + CACHE_TTL_MS, payload });
   return payload;
 }

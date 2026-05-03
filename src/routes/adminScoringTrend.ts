@@ -17,17 +17,22 @@
  */
 import type { FastifyInstance } from 'fastify';
 import { SHARED_STYLE, SHARED_CRUMBS } from './adminEdit.js';
-import { buildScoringTrend } from '../services/simulation/scoringTrend.js';
+import {
+  buildScoringTrend,
+  type Granularity,
+} from '../services/simulation/scoringTrend.js';
 
 export async function adminScoringTrendRoutes(fastify: FastifyInstance): Promise<void> {
   // ─── JSON endpoint ─────────────────────────────────────────────────────
-  fastify.get<{ Querystring: { weeks?: string } }>(
+  fastify.get<{ Querystring: { weeks?: string; granularity?: string } }>(
     '/admin/api/scoring-trend',
     async (req, reply) => {
       const weeksRaw = req.query?.weeks;
       const weeks = weeksRaw ? Number(weeksRaw) : 8;
+      const granRaw = (req.query?.granularity ?? 'daily').toLowerCase();
+      const granularity: Granularity = granRaw === 'weekly' ? 'weekly' : 'daily';
       try {
-        return await buildScoringTrend(weeks);
+        return await buildScoringTrend(weeks, granularity);
       } catch (err) {
         reply.code(500).send({
           ok: false,
@@ -85,7 +90,12 @@ const CHART_PAGE_HTML = /* html */ `<!doctype html>
 
   <div class="card-block">
     <div class="toolbar">
-      <span style="color:var(--muted);font-size:12px;">Window:</span>
+      <span style="color:var(--muted);font-size:12px;">Granularity:</span>
+      <div class="range-picker" id="granPicker">
+        <button class="range-btn active" data-gran="daily">Daily</button>
+        <button class="range-btn" data-gran="weekly">Weekly</button>
+      </div>
+      <span style="color:var(--muted);font-size:12px;margin-left:8px;">Window:</span>
       <div class="range-picker" id="rangePicker">
         <button class="range-btn" data-weeks="1">1 week</button>
         <button class="range-btn" data-weeks="4">4 weeks</button>
@@ -100,7 +110,7 @@ const CHART_PAGE_HTML = /* html */ `<!doctype html>
     </div>
     <div class="legend-line">
       Click a series in the legend to hide it. Hover a bar for exact per-sport values.
-      Bars are weekly-binned when window &gt; 4 weeks for legibility.
+      <span id="granHint">Daily mode: each bar is one calendar day; sports only stack on their game days.</span>
     </div>
   </div>
 </div>
@@ -120,64 +130,16 @@ const CHART_PAGE_HTML = /* html */ `<!doctype html>
 
   let chart = null;
   let currentWeeks = 8;
+  let currentGran = 'daily';
 
   function fmtDate(iso) {
     const d = new Date(iso + 'T00:00:00Z');
     return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric', timeZone: 'UTC' });
   }
-  function fmtWeekStart(iso) {
-    const d = new Date(iso + 'T00:00:00Z');
-    return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric', timeZone: 'UTC' });
-  }
 
-  function isoWeekKey(iso) {
-    // Year + ISO-week-ish key; we just want stable weekly buckets.
-    const d = new Date(iso + 'T00:00:00Z');
-    // Bucket by Monday of the week (UTC). getDay() Sun=0..Sat=6 — shift.
-    const dow = d.getUTCDay();
-    const monday = new Date(d.getTime() - ((dow + 6) % 7) * 86400_000);
-    return monday.toISOString().slice(0, 10);
-  }
-
-  /** Bin daily points into weekly buckets when the window > 4 weeks.
-   *  Each bucket sums per-sport contributions across the 7 days, then
-   *  divides by the number of game days that sport actually had so the
-   *  bar height stays as a per-game-day average (not a weekly total). */
-  function maybeBin(days, weeks) {
-    if (weeks <= 4) return days.map(d => ({ ...d, label: fmtDate(d.date) }));
-    const bucketsByKey = new Map();
-    for (const day of days) {
-      const key = isoWeekKey(day.date);
-      let b = bucketsByKey.get(key);
-      if (!b) {
-        b = { date: key, by_sport_sum: {}, by_sport_count: {}, roster_sum: 0, n: 0 };
-        bucketsByKey.set(key, b);
-      }
-      for (const s of Object.keys(day.by_sport)) {
-        const v = day.by_sport[s];
-        if (typeof v !== 'number') continue;
-        b.by_sport_sum[s] = (b.by_sport_sum[s] || 0) + v;
-        b.by_sport_count[s] = (b.by_sport_count[s] || 0) + 1;
-      }
-      b.roster_sum += day.roster_avg || 0;
-      b.n += 1;
-    }
-    const out = [];
-    for (const b of bucketsByKey.values()) {
-      const by_sport = {};
-      for (const s of Object.keys(b.by_sport_sum)) {
-        const c = b.by_sport_count[s] || 1;
-        by_sport[s] = Math.round((b.by_sport_sum[s] / c) * 100) / 100;
-      }
-      out.push({
-        date: b.date,
-        label: 'wk of ' + fmtWeekStart(b.date),
-        by_sport,
-        roster_avg: Math.round((b.roster_sum / Math.max(1, b.n)) * 100) / 100,
-      });
-    }
-    out.sort((a, b) => a.date.localeCompare(b.date));
-    return out;
+  function labelFor(iso, granularity) {
+    if (granularity === 'weekly') return 'wk of ' + fmtDate(iso);
+    return fmtDate(iso);
   }
 
   function buildDatasets(points, enabledSports) {
@@ -219,9 +181,12 @@ const CHART_PAGE_HTML = /* html */ `<!doctype html>
   }
 
   function render(payload) {
-    const points = maybeBin(payload.days, payload.weeks);
+    const points = (payload.days || []).map(d => ({ ...d, label: labelFor(d.date, payload.granularity) }));
     const labels = points.map(p => p.label);
     const datasets = buildDatasets(points, payload.enabled_sports);
+    const isWeekly = payload.granularity === 'weekly';
+    const yTitle = isWeekly ? 'Weekly sport contribution (PP)' : 'Daily sport contribution (PP)';
+    const y1Title = isWeekly ? 'Roster avg, weekly total (PP)' : 'Roster avg, daily (PP)';
 
     if (chart) chart.destroy();
     const ctx = document.getElementById('trendChart').getContext('2d');
@@ -261,14 +226,14 @@ const CHART_PAGE_HTML = /* html */ `<!doctype html>
             stacked: true,
             position: 'left',
             beginAtZero: true,
-            title: { display: true, text: 'Sport contribution (PP)', color: '#8aa0b8' },
+            title: { display: true, text: yTitle, color: '#8aa0b8' },
             ticks: { color: '#8aa0b8' },
             grid: { color: '#1f2a3b' },
           },
           y1: {
             position: 'right',
             beginAtZero: true,
-            title: { display: true, text: 'Roster avg (PP)', color: '#facc15' },
+            title: { display: true, text: y1Title, color: '#facc15' },
             ticks: { color: '#facc15' },
             grid: { drawOnChartArea: false },
           },
@@ -277,22 +242,31 @@ const CHART_PAGE_HTML = /* html */ `<!doctype html>
     });
 
     const meta = document.getElementById('metaLine');
+    const unit = isWeekly ? 'weeks' : 'days';
     let s = 'Source: <code>' + payload.source + '</code>';
+    s += ' · granularity: <code>' + payload.granularity + '</code>';
     if (payload.source_run_id) {
       s += ' · run <code>' + payload.source_run_id.slice(0, 8) + '</code>';
     }
     if (payload.source_run_completed_at) {
       s += ' · ' + new Date(payload.source_run_completed_at).toLocaleString();
     }
-    s += ' · ' + payload.days.length + ' days · enabled: ' + payload.enabled_sports.join(', ');
+    s += ' · ' + (payload.days || []).length + ' ' + unit + ' · enabled: ' + (payload.enabled_sports || []).join(', ');
     meta.innerHTML = s;
+
+    const hint = document.getElementById('granHint');
+    if (hint) {
+      hint.textContent = isWeekly
+        ? 'Weekly mode: each bar sums all 7 days into one bucket; bar height is the week\\'s total per-sport contribution.'
+        : 'Daily mode: each bar is one calendar day; sports only stack on their game days.';
+    }
   }
 
-  async function load(weeks) {
+  async function load(weeks, gran) {
     const status = document.getElementById('status');
     status.textContent = 'loading…';
     try {
-      const res = await fetch('/admin/api/scoring-trend?weeks=' + weeks);
+      const res = await fetch('/admin/api/scoring-trend?weeks=' + weeks + '&granularity=' + gran);
       const payload = await res.json();
       if (!res.ok) throw new Error(payload.error || ('HTTP ' + res.status));
       render(payload);
@@ -311,12 +285,26 @@ const CHART_PAGE_HTML = /* html */ `<!doctype html>
       if (!w || w === currentWeeks) return;
       currentWeeks = w;
       [...picker.querySelectorAll('.range-btn')].forEach(b => b.classList.toggle('active', b === btn));
-      load(w);
+      load(currentWeeks, currentGran);
+    });
+  }
+
+  function setupGranPicker() {
+    const picker = document.getElementById('granPicker');
+    picker.addEventListener('click', (e) => {
+      const btn = e.target.closest('.range-btn');
+      if (!btn) return;
+      const g = btn.dataset.gran;
+      if (!g || g === currentGran) return;
+      currentGran = g;
+      [...picker.querySelectorAll('.range-btn')].forEach(b => b.classList.toggle('active', b === btn));
+      load(currentWeeks, currentGran);
     });
   }
 
   setupRangePicker();
-  load(currentWeeks);
+  setupGranPicker();
+  load(currentWeeks, currentGran);
 })();
 </script>
 </body></html>`;
