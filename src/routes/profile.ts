@@ -5,6 +5,7 @@ import { brandingFilter } from '../services/branding.js';
 import { generateHandle } from '../utils/handleGenerator.js';
 import { requireAuth, type AuthenticatedRequest } from '../middleware/auth.js';
 import { resolveFeaturesForUser } from '../services/safetyResolver.js';
+import { validateUserContent } from '../services/nicknameModeration.js';
 
 const INITIAL_FREE_CARDS = 3;
 
@@ -105,5 +106,64 @@ export async function profileRoutes(fastify: FastifyInstance): Promise<void> {
 
     if (error) return reply.code(500).send({ error: error.message });
     return reply.send(brandingFilter(data));
+  });
+
+  // POST /profile/display-name — kid-authored nickname (Bug — COPPA
+  // moderation). Pipeline lives in services/nicknameModeration.ts;
+  // we persist `display_name_status='approved'` only on success.
+  // On rejection we still write the status='rejected' so the admin
+  // moderation queue can pick it up for manual review.
+  const displayNameSchema = z.object({ display_name: z.string().min(0).max(40) });
+  fastify.post('/profile/display-name', { preHandler: requireAuth }, async (req, reply) => {
+    const { profileId } = req as AuthenticatedRequest;
+    const parsed = displayNameSchema.safeParse(req.body);
+    if (!parsed.success) return reply.code(400).send({ error: parsed.error.flatten() });
+
+    // Empty string clears the override → app falls back to username.
+    if (parsed.data.display_name.trim() === '') {
+      const { error } = await supabase
+        .from('profiles')
+        .update({ display_name: null, display_name_status: 'pending' })
+        .eq('id', profileId);
+      if (error) return reply.code(500).send({ error: error.message });
+      return reply.send({ status: 'cleared', display_name: null });
+    }
+
+    // Pull age for the COPPA-stricter branch.
+    const { data: profile, error: profErr } = await supabase
+      .from('profiles')
+      .select('age, birth_year')
+      .eq('id', profileId)
+      .single();
+    if (profErr) return reply.code(500).send({ error: profErr.message });
+
+    const age =
+      (profile as { age?: number; birth_year?: number } | null)?.age ??
+      (typeof (profile as { birth_year?: number } | null)?.birth_year === 'number'
+        ? new Date().getFullYear() - ((profile as { birth_year: number }).birth_year)
+        : null);
+
+    const verdict = await validateUserContent({
+      content: parsed.data.display_name,
+      age,
+      kind: 'display_name',
+    });
+
+    const status = verdict.ok ? 'approved' : 'rejected';
+    const { error: updErr } = await supabase
+      .from('profiles')
+      .update({
+        display_name: verdict.normalized,
+        display_name_status: status,
+      })
+      .eq('id', profileId);
+    if (updErr) return reply.code(500).send({ error: updErr.message });
+
+    return reply.send({
+      status,
+      display_name: verdict.ok ? verdict.normalized : null,
+      reason: verdict.ok ? undefined : verdict.reason,
+      stage: verdict.stage,
+    });
   });
 }
