@@ -37,6 +37,7 @@ import { syncRoutes } from './routes/sync.js';
 import { tradeRoutes } from './routes/trade.js';
 import { startStatsRefreshJobs } from './jobs/refreshStats.js';
 import { startHighlightsCron } from './jobs/highlightsCron.js';
+import { installAdminAuth } from './middleware/adminAuth.js';
 
 const PORT = Number(process.env.PORT ?? 3001);
 const HOST = '0.0.0.0';
@@ -71,6 +72,13 @@ await server.register(cors, {
 // raw parser that just buffers the body as-is.
 server.addContentTypeParser(/^multipart\/.*/, { parseAs: 'buffer', bodyLimit: 25 * 1024 * 1024 },
   (_req, body, done) => done(null, body));
+
+// ─── Admin auth ──────────────────────────────────────────────────────────────
+// HTTP Basic Auth gate for /admin/*. Must be installed BEFORE the admin routes
+// so the onRequest hook is in the chain when /admin/* requests arrive. In
+// production this throws if ADMIN_USER/ADMIN_PASSWORD aren't set — we never
+// want to ship an unprotected admin dashboard.
+installAdminAuth(server);
 
 // ─── Route tracker ───────────────────────────────────────────────────────────
 // Must be installed BEFORE any route registration so /admin/status can list
