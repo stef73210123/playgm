@@ -69,3 +69,8 @@ export const loadPacksSpec = (): unknown => read('cards/pgm_packs.json');
 export const loadPityTimersSpec = (): unknown => read('cards/pgm_pity_timers.json');
 export const loadTradeRulesSpec = (): unknown => read('economy/pgm_trade_rules.json');
 export const loadScanGradeRaritySpec = (): unknown => read('cards/scan_grade_to_rarity.json');
+/**
+ * Per-card energy / recharge spec. 2026-05-03 single-pip / 24h auto-recharge.
+ * Tunable via the admin economy editor without a code deploy.
+ */
+export const loadCardEnergySpec = (): unknown => read('economy/pgm_card_energy.json');
