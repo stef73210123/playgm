@@ -92,7 +92,11 @@ export interface SubscriptionTierSpec {
   name: string;
   monthly_price_usd: number;
   rosters_per_week: number;
-  practice_drafts_per_week: number;
+  /**
+   * Practice drafts allowed per UTC day. -1 = unlimited.
+   * Per-day allowance (was per-week before May 2026 rebalance).
+   */
+  practice_drafts_per_day: number;
   /** Legacy boolean — true if cap is in `draft_modes`. New code: branch on `draft_modes`. */
   cap_mode: boolean;
   /** Allowed draft modes for this tier. Free = ['snake']; paid = ['snake','cap']. */

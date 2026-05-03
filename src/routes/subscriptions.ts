@@ -30,14 +30,16 @@ const upgradeSchema = z.object({
  *   - rosters: 1 (free) / 3 (starter) / 6 (playmaker) / 12 (champion). The
  *     legacy `rostersPerWeek` field collapses to 2 / 3 to match the historical
  *     2 | 3 union — clients reading new code should use the spec directly.
- *   - practice drafts: 1 / 5 / 15 / -1 (unlimited)
+ *   - practice drafts: 1 / 1 / 3 / -1 (unlimited) — PER DAY (was per-week).
+ *     A fixed daily allowance kids can plan around, not a weekly bucket they
+ *     can blow on Monday. Resets at UTC 00:00.
  *   - deepDivesUnlocked: TRUE for every tier — all scouting is free now.
  */
 const TIER_ENTITLEMENTS = {
-  free:      { rostersPerWeek: 2, practiceDraftsPerWeek: 1,  capModeUnlocked: false, deepDivesUnlocked: true },
-  starter:   { rostersPerWeek: 3, practiceDraftsPerWeek: 5,  capModeUnlocked: true,  deepDivesUnlocked: true },
-  playmaker: { rostersPerWeek: 3, practiceDraftsPerWeek: 15, capModeUnlocked: true,  deepDivesUnlocked: true },
-  champion:  { rostersPerWeek: 3, practiceDraftsPerWeek: -1, capModeUnlocked: true,  deepDivesUnlocked: true },
+  free:      { rostersPerWeek: 2, practiceDraftsPerDay: 1,  capModeUnlocked: false, deepDivesUnlocked: true },
+  starter:   { rostersPerWeek: 3, practiceDraftsPerDay: 1,  capModeUnlocked: true,  deepDivesUnlocked: true },
+  playmaker: { rostersPerWeek: 3, practiceDraftsPerDay: 3,  capModeUnlocked: true,  deepDivesUnlocked: true },
+  champion:  { rostersPerWeek: 3, practiceDraftsPerDay: -1, capModeUnlocked: true,  deepDivesUnlocked: true },
 } as const;
 
 export async function subscriptionRoutes(fastify: FastifyInstance): Promise<void> {

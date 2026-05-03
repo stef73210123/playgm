@@ -2,8 +2,12 @@
  * Practice draft routes (GDD §5).
  *
  * Stub implementation. Practice drafts are mock drafts against AI — nothing
- * counts toward official weekly lineups or contests. Weekly-reset allocation
- * is enforced server-side (once real).
+ * counts toward official weekly lineups or contests.
+ *
+ * Per-day allocation (May 2026 rebalance — was per-week before).
+ * Resets at UTC 00:00. Allowance comes from
+ * data/economy/pgm_subscriptions.json#practice_drafts_per_day:
+ *   free=1, starter=1, playmaker=3, champion=-1 (unlimited).
  *
  * Routes:
  *   GET  /practice-drafts                — allocation + history for the caller
@@ -15,8 +19,20 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { requireAuth, type AuthenticatedRequest } from '../middleware/auth.js';
-import { isDraftModeAllowed } from '../economy/index.js';
+import { getSubscription, isDraftModeAllowed } from '../economy/index.js';
 import type { SubscriptionTierId } from '../economy/types.js';
+
+/** Next UTC midnight as ISO string — when the daily allowance refills. */
+function nextUtcMidnightIso(): string {
+  const d = new Date();
+  d.setUTCHours(24, 0, 0, 0);
+  return d.toISOString();
+}
+
+/** Resolve the per-day practice-draft allowance for a tier. -1 → unlimited. */
+function resolveDailyLimit(tier: SubscriptionTierId): number {
+  return getSubscription(tier).practice_drafts_per_day;
+}
 
 const startSchema = z.object({
   draftMode: z.enum(['snake', 'cap']),
@@ -41,12 +57,15 @@ const saveSchema = z.object({
 export async function practiceDraftRoutes(fastify: FastifyInstance): Promise<void> {
   fastify.get('/practice-drafts', { preHandler: requireAuth }, async (req, _reply) => {
     const { profileId } = req as AuthenticatedRequest;
+    const tier = resolveTier(req);
     return {
       profileId,
       allocation: {
-        weeklyLimit: 1,       // stub — real impl reads subscription entitlements
-        usedThisWeek: 0,
-        resetsAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
+        // Per-day allowance (May 2026 rebalance — was per-week).
+        // dailyLimit === -1 means unlimited (Champion tier).
+        dailyLimit: resolveDailyLimit(tier),
+        usedToday: 0,         // stub — real impl reads from a usage table keyed (user_id, ymd)
+        resetsAt: nextUtcMidnightIso(),
       },
       history: [],
     };

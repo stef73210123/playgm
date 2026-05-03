@@ -107,7 +107,7 @@ interface SubTier {
   name: string;
   monthly_price_usd: number;
   rosters_per_week: number;
-  practice_drafts_per_week: number;
+  practice_drafts_per_day: number;
   cap_mode: boolean;
   draft_modes: Array<'snake' | 'cap'>;
   fa_pool_size_per_week: number;
@@ -369,10 +369,10 @@ function validateSubscriptionTier(
       errs.push({ field: 'rosters_per_week', message: 'must be integer ≥0' });
     }
   }
-  if (body['practice_drafts_per_week'] !== undefined) {
-    const v = body['practice_drafts_per_week'];
+  if (body['practice_drafts_per_day'] !== undefined) {
+    const v = body['practice_drafts_per_day'];
     if (!isInt(v) || (v as number) < -1) {
-      errs.push({ field: 'practice_drafts_per_week', message: 'must be integer ≥-1' });
+      errs.push({ field: 'practice_drafts_per_day', message: 'must be integer ≥-1' });
     }
   }
   if (body['cap_mode'] !== undefined && typeof body['cap_mode'] !== 'boolean') {
@@ -992,7 +992,7 @@ export async function adminEditConfigRoutes(fastify: FastifyInstance): Promise<v
         <table id="tbl">
           <thead><tr>
             <th>Tier</th><th>Name</th><th>$/mo</th><th>Rosters/wk</th>
-            <th>Drafts/wk</th><th>Cap mode</th><th>Draft modes</th>
+            <th>Drafts/day</th><th>Cap mode</th><th>Draft modes</th>
             <th>FA pool/wk</th><th>Slot picker</th><th>Family max</th>
             <th>Inv cap</th><th>PP daily</th><th>Scout cap</th><th>Card scan cap</th>
             <th>Trade cap/season</th>
@@ -1710,14 +1710,14 @@ const SUBSCRIPTIONS_JS = /* javascript */ `
   /** Snapshot of "spec defaults" (v2.0.0). Used by the Reset button. */
   const DEFAULTS = {
     free: {
-      name:'Free', monthly_price_usd:0, rosters_per_week:1, practice_drafts_per_week:1,
+      name:'Free', monthly_price_usd:0, rosters_per_week:1, practice_drafts_per_day:1,
       cap_mode:false, draft_modes:['snake'], fa_pool_size_per_week:10,
       draft_position_control:'none', family_max_profiles:1, monthly_pack_allocation:[],
       card_inventory_cap:100, daily_pp_boost:200, ask_scout_daily_cap:2,
       card_scan_daily_cap:2, trade_cap_per_season:2, notes:''
     },
     starter: {
-      name:'Starter', monthly_price_usd:4.99, rosters_per_week:3, practice_drafts_per_week:5,
+      name:'Starter', monthly_price_usd:4.99, rosters_per_week:3, practice_drafts_per_day:1,
       cap_mode:true, draft_modes:['snake','cap'], fa_pool_size_per_week:20,
       draft_position_control:'random', family_max_profiles:1,
       monthly_pack_allocation:[{pack_id:'pro_pack',count:1}],
@@ -1725,7 +1725,7 @@ const SUBSCRIPTIONS_JS = /* javascript */ `
       card_scan_daily_cap:5, trade_cap_per_season:-1, notes:''
     },
     playmaker: {
-      name:'Playmaker', monthly_price_usd:9.99, rosters_per_week:6, practice_drafts_per_week:15,
+      name:'Playmaker', monthly_price_usd:9.99, rosters_per_week:6, practice_drafts_per_day:3,
       cap_mode:true, draft_modes:['snake','cap'], fa_pool_size_per_week:30,
       draft_position_control:'preferred_slot', family_max_profiles:1,
       monthly_pack_allocation:[{pack_id:'pro_pack',count:3}],
@@ -1733,7 +1733,7 @@ const SUBSCRIPTIONS_JS = /* javascript */ `
       card_scan_daily_cap:10, trade_cap_per_season:-1, notes:''
     },
     champion: {
-      name:'Champion', monthly_price_usd:19.99, rosters_per_week:12, practice_drafts_per_week:-1,
+      name:'Champion', monthly_price_usd:19.99, rosters_per_week:12, practice_drafts_per_day:-1,
       cap_mode:true, draft_modes:['snake','cap'], fa_pool_size_per_week:40,
       draft_position_control:'exact_slot', family_max_profiles:1,
       monthly_pack_allocation:[
@@ -1771,7 +1771,7 @@ const SUBSCRIPTIONS_JS = /* javascript */ `
       name: tr.querySelector('.name').value.trim(),
       monthly_price_usd: Number(tr.querySelector('.price').value),
       rosters_per_week: Number(tr.querySelector('.rpw').value),
-      practice_drafts_per_week: Number(tr.querySelector('.dpw').value),
+      practice_drafts_per_day: Number(tr.querySelector('.dpw').value),
       cap_mode: tr.querySelector('.cap').checked,
       draft_modes,
       fa_pool_size_per_week: Number(tr.querySelector('.fa').value),
@@ -1799,7 +1799,7 @@ const SUBSCRIPTIONS_JS = /* javascript */ `
       ['Tier id', t => '<code>'+esc(t.tier_id)+'</code>'],
       ['Price / mo', t => '$' + Number(t.monthly_price_usd).toFixed(2)],
       ['Rosters / week', t => fmt(t.rosters_per_week)],
-      ['Practice drafts / week', t => fmt(t.practice_drafts_per_week)],
+      ['Practice drafts / day', t => fmt(t.practice_drafts_per_day)],
       ['Cap mode', t => t.cap_mode ? '✓' : '—'],
       ['Draft modes', t => (t.draft_modes||[]).join(', ')],
       ['FA pool / week', t => fmt(t.fa_pool_size_per_week)],
@@ -1836,7 +1836,7 @@ const SUBSCRIPTIONS_JS = /* javascript */ `
         }
       };
       checkUp('rosters_per_week','Rosters/week');
-      checkUp('practice_drafts_per_week','Drafts/week');
+      checkUp('practice_drafts_per_day','Drafts/day');
       checkUp('fa_pool_size_per_week','FA pool');
       checkUp('card_inventory_cap','Inventory cap');
       checkUp('daily_pp_boost','Daily PP');
@@ -1862,7 +1862,7 @@ const SUBSCRIPTIONS_JS = /* javascript */ `
       '<td><input class="name" value="' + esc(t.name) + '" /></td>' +
       '<td><input class="price" type="number" min="0" step="0.01" value="' + t.monthly_price_usd + '" style="width:80px;" /></td>' +
       '<td><input class="rpw" type="number" min="0" value="' + t.rosters_per_week + '" style="width:60px;" /></td>' +
-      '<td><input class="dpw" type="number" min="-1" value="' + t.practice_drafts_per_week + '" style="width:60px;" title="-1 = unlimited" /></td>' +
+      '<td><input class="dpw" type="number" min="-1" value="' + t.practice_drafts_per_day + '" style="width:60px;" title="-1 = unlimited" /></td>' +
       '<td><input class="cap" type="checkbox" ' + (t.cap_mode?'checked':'') + ' /></td>' +
       '<td><input class="dm" value="' + esc(dmStr) + '" placeholder="snake,cap" style="width:100px;" /></td>' +
       '<td><input class="fa" type="number" min="0" value="' + (t.fa_pool_size_per_week ?? 0) + '" style="width:60px;" /></td>' +
@@ -1920,7 +1920,7 @@ const SUBSCRIPTIONS_JS = /* javascript */ `
     const status = tr.querySelector('.status');
     const body = rowToBody(tr);
     // Pre-flight: numeric fields must not be < -1; -1 is the sentinel for unlimited.
-    const numericKeys = ['practice_drafts_per_week','card_inventory_cap','ask_scout_daily_cap','card_scan_daily_cap','trade_cap_per_season'];
+    const numericKeys = ['practice_drafts_per_day','card_inventory_cap','ask_scout_daily_cap','card_scan_daily_cap','trade_cap_per_season'];
     for (const k of numericKeys) {
       if (Number.isNaN(body[k]) || body[k] < -1) {
         showStatus(status, false, k + ' must be ≥ -1 (-1 = unlimited)');

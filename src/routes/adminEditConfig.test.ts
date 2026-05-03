@@ -61,7 +61,7 @@ jest.mock('node:fs/promises', () => {
         name: 'Free',
         monthly_price_usd: 0,
         rosters_per_week: 2,
-        practice_drafts_per_week: 1,
+        practice_drafts_per_day: 1,
         cap_mode: false,
         monthly_pack_allocation: [],
         card_inventory_cap: 100,
