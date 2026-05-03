@@ -34,6 +34,7 @@ interface ConfigPayload {
     safety_matrix: unknown;
     trade_rules: unknown;
     sfx_manifest: unknown;
+    sports_config: unknown;
   };
 }
 
@@ -57,6 +58,7 @@ const SPEC_FILES = {
   safety_matrix: ['data', 'safety', 'age_feature_matrix.json'],
   trade_rules: ['data', 'economy', 'pgm_trade_rules.json'],
   sfx_manifest: ['data', 'audio', 'pgm_sfx_manifest.json'],
+  sports_config: ['data', 'system', 'sports_config.json'],
 } as const;
 
 async function buildPayload(): Promise<ConfigPayload> {
