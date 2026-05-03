@@ -228,6 +228,16 @@ function handleLookupPlayerStats(args: LookupArgs): string {
 // Anthropic web_search server tool — pinned at the GA version. We cap at 3
 // searches per Ask Scout call so a single kid question can't blow our budget.
 // Domain allowlist keeps results in the kid-appropriate sports lane.
+// Anthropic's web_search user agent is blocked from crawling certain
+// domains (e.g. The Athletic). Including ANY blocked domain in
+// allowed_domains causes the entire /messages call to fail with a 400 —
+// not a graceful degrade. Keep this list to domains the crawler can
+// actually reach. If we want to add a domain, verify with a one-off
+// /messages call first.
+//
+// Removed 2026-05-03: 'theathletic.com' (blocks Anthropic crawler →
+// every Ask Scout call returned the catch-block fallback "Scout is
+// having trouble thinking right now").
 const WEB_SEARCH_TOOL = {
   type: 'web_search_20250305',
   name: 'web_search',
@@ -242,7 +252,6 @@ const WEB_SEARCH_TOOL = {
     'cbssports.com',
     'foxsports.com',
     'nbcsports.com',
-    'theathletic.com',
     'si.com',
     'bleacherreport.com',
   ],
