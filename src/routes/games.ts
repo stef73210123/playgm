@@ -147,6 +147,11 @@ export async function gamesRoutes(fastify: FastifyInstance): Promise<void> {
   //   slots so the HomeScreen "Yesterday's Games" carousel can cut over from
   //   its static mock without a shape mismatch. Both fields may be null/[]
   //   today; the mapper is ready for real box-score data when it lands.
+  //
+  //   STRICT YESTERDAY-ONLY (May 2026): the date is hardcoded via
+  //   `yesterdayUTC()` — there is no `?date=` override. The recap modal in
+  //   the client is intentionally scoped to yesterday only; historical
+  //   games belong on a separate "stats history" surface, not the recap.
   fastify.get('/api/games/yesterday', async (_req, reply) => {
     try {
       const events = await fetchDayEvents(yesterdayUTC());
