@@ -100,7 +100,11 @@ async function refreshPlayer(player) {
   const prev      = getLatestSnapshot(player.id);
   const diff      = diffSnapshots(prev, snapshot);
 
-  insertSnapshot(player.id, snapshot);
+  // Only write a new snapshot when something actually changed to avoid
+  // filling the table with identical rows on quiet days.
+  if (diff.length > 0) {
+    insertSnapshot(player.id, snapshot);
+  }
   return { status: 'ok', diff };
 }
 
