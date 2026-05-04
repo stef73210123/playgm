@@ -159,6 +159,18 @@ export interface StatLineResponse {
   overall_grade: Grade | null;
   score: number | null;
   confidence: number | null;
+  // Bio strip — promoted from PlayerCacheEntry so the scouting report
+  // doesn't have to round-trip TheSportsDB for fields the ESPN ingest
+  // already gives us (height/weight/dob/hometown). 2026-05-04 — wired to
+  // unblock missing-bio reports flagged on Build 20.
+  bio: {
+    height_inches: number | null;
+    weight_lb: number | null;
+    date_of_birth: string | null;
+    hometown: string | null;
+    years_in_league: number | null;
+    draft_year: number | null;
+  };
 }
 
 async function buildResponse(player: PlayerCacheEntry, league: League): Promise<StatLineResponse> {
@@ -207,6 +219,14 @@ async function buildResponse(player: PlayerCacheEntry, league: League): Promise<
     overall_grade: grade,
     score,
     confidence,
+    bio: {
+      height_inches: player.height_inches ?? null,
+      weight_lb: player.weight_lb ?? null,
+      date_of_birth: player.date_of_birth ?? null,
+      hometown: player.hometown ?? null,
+      years_in_league: player.years_in_league ?? null,
+      draft_year: player.draft_year ?? null,
+    },
   };
 }
 
