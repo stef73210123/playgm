@@ -339,6 +339,26 @@ export async function cardScanRoutes(fastify: FastifyInstance): Promise<void> {
         return reply.send(response);
       }
 
+      // ─── No PlayGM template guess → unrecognized ────────────────────────────
+      // Codex audit 2026-05-04 (bug E): when the vision model returned a null
+      // `template_id_guess`, short-circuit to the unrecognized envelope. The
+      // prior code path fell through into the third-party-card → player-grant
+      // flow which would 502 if the grant failed (e.g. test environments
+      // without the full Supabase grant table). The contract — captured by
+      // `cardScan.test.ts` — is that any null template guess returns 200
+      // with `match_status='unrecognized'`. The grant path remains for the
+      // narrower case where the model returned a non-null guess that just
+      // didn't match a known PlayGM template (model thought it was a Topps
+      // card or something not in our library).
+      if (extraction.template_id_guess == null) {
+        applyAdvisoryHeaders(reply, decision);
+        return reply.send({
+          match_status: 'unrecognized',
+          extraction: sanitizedExtraction,
+          template: null,
+        } satisfies ScanResponse);
+      }
+
       // ─── Third-party card → player lookup + scout-card grant ───────────────
       // Per docs/card-scan-ip-policy.md, we never reproduce the manufacturer's
       // design. Instead we look the depicted athlete up in our own roster and
