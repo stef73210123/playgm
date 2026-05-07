@@ -12,6 +12,8 @@
  */
 
 require('dotenv').config();
+const fs   = require('fs');
+const path = require('path');
 const { lookupPlayer, lastTeamEvents } = require('../api/sportsdb');
 const {
   getAllPlayers, upsertPlayer,
@@ -19,6 +21,8 @@ const {
   diffSnapshots,
   startRefreshLog, finishRefreshLog,
 } = require('../models/player');
+
+const REPORTS_DIR = path.resolve(process.env.REPORTS_DIR || './reports');
 
 // Pause between API calls to respect free-tier rate limit (~1 req/s)
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -147,6 +151,7 @@ async function run() {
     }
   }
 
+  const runDate = new Date();
   finishRefreshLog(logId, {
     total:   players.length,
     updated,
@@ -156,6 +161,7 @@ async function run() {
 
   console.log(`\n=== Done — ${updated} updated, ${failed} failed ===\n`);
   printDiffReport(diffSummary);
+  writeDiffFile(runDate, { total: players.length, updated, failed, diffSummary });
 }
 
 function printDiffReport(diffSummary) {
@@ -173,6 +179,25 @@ function printDiffReport(diffSummary) {
     });
   });
   console.log('\n────────────────────────────────────────────\n');
+}
+
+function writeDiffFile(date, { total, updated, failed, diffSummary }) {
+  try {
+    fs.mkdirSync(REPORTS_DIR, { recursive: true });
+    const dateStr = date.toISOString().slice(0, 10);
+    const filePath = path.join(REPORTS_DIR, `${dateStr}.json`);
+    const report = {
+      date: dateStr,
+      refreshedAt: date.toISOString(),
+      summary: { total, updated, failed },
+      changes: diffSummary.filter((e) => e.diff && e.diff.length > 0),
+      errors: diffSummary.filter((e) => e.error),
+    };
+    fs.writeFileSync(filePath, JSON.stringify(report, null, 2));
+    console.log(`Diff report written → ${filePath}`);
+  } catch (err) {
+    console.error(`Failed to write diff report: ${err.message}`);
+  }
 }
 
 // Allow running directly: `node src/jobs/morningRefresh.js`
