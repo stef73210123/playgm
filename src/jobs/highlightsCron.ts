@@ -70,11 +70,19 @@ import {
 } from '../services/sportsdb/highlights.js';
 import { searchPlayersByName, lookupPlayer } from '../services/sportsdb.js';
 import { checkEmbeddability, youtubeIdFromUrl } from '../services/youtube/embeddability.js';
+import { backfillAllTimeGreatsHighlights } from './allTimeGreatsHighlights.js';
 
 // ─── Tunables ───────────────────────────────────────────────────────────────
 
 /** Hard daily ceiling for SportsDB+YouTube round-trips per cron run. */
 const PLAYER_DAILY_CAP = 2_500;
+/**
+ * Per-day cap on YouTube Data API search.list calls used by the
+ * all-time-greats backfill (1 call = 100 quota units, hard 10k/day).
+ * Default 80 leaves ~20% headroom for the embeddability checks the
+ * player-side cron makes during the same run.
+ */
+const ALL_TIME_GREATS_DAILY_CAP = 80;
 /** Max videos persisted per player. */
 const VIDEOS_PER_PLAYER = 10;
 /** Per-player polite delay between SportsDB roundtrips. */
@@ -367,6 +375,14 @@ interface RunSummary {
   players: number;
   skipped: number;
   perSport: Record<Sport, { processed: number; written: number; skipped: number }>;
+  /** Tail-of-run all-time-greats backfill stats. Optional — may be
+   *  absent if the YouTube key is unset and the backfill bailed early. */
+  allTimeGreats?: {
+    scanned: number;
+    populated: number;
+    total_with_id: number;
+    total_entries: number;
+  };
 }
 
 /**
@@ -549,7 +565,30 @@ export async function refreshHighlightsNow(log?: FastifyBaseLogger): Promise<Run
     reportError('writeCursor', err);
   }
 
-  const line = `[highlights-cron] refreshed ${summary.teams} teams, ${summary.players} players, ${summary.skipped} skipped`;
+  // ── All-time-greats backfill (YouTube Data API v3 search) ────────────────
+  // Runs at the tail so any quota spikes from the player-side pass don't
+  // starve the more important active-roster work. Capped per-run; the
+  // module persists partial progress, so consecutive days walk through
+  // the ~2,500-entry list without revisiting populated rows.
+  try {
+    const ag = await backfillAllTimeGreatsHighlights({
+      limit: ALL_TIME_GREATS_DAILY_CAP,
+      log,
+    });
+    summary.allTimeGreats = {
+      scanned: ag.scanned,
+      populated: ag.populated,
+      total_with_id: ag.total_with_id,
+      total_entries: ag.total_entries,
+    };
+  } catch (err) {
+    reportError('backfillAllTimeGreatsHighlights', err);
+  }
+
+  const line = `[highlights-cron] refreshed ${summary.teams} teams, ${summary.players} players, ${summary.skipped} skipped` +
+    (summary.allTimeGreats
+      ? `; greats +${summary.allTimeGreats.populated} (${summary.allTimeGreats.total_with_id}/${summary.allTimeGreats.total_entries})`
+      : '');
   if (log) log.info(line);
   else console.log(line);
 
