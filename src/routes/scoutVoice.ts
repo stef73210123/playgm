@@ -7,7 +7,7 @@
  *
  * Routes:
  *   POST /voice/tts   { text, voiceId? } → audio/mpeg stream
- *   POST /voice/stt   multipart/form-data (field: audio) → { transcript }
+ *   POST /voice/stt   multipart/form-data (fields: file, model_id) → { transcript }
  *
  * Both endpoints degrade gracefully when ELEVENLABS_API_KEY is unset:
  *   - /voice/tts returns 503 so the client falls back to silent display.
@@ -25,7 +25,8 @@ const ELEVENLABS_BASE = 'https://api.elevenlabs.io';
 // (Trivia screen). The hardcoded fallback exists only so dev builds
 // still emit something when ELEVENLABS_VOICE_ID isn't set.
 const DEFAULT_VOICE_ID = process.env['ELEVENLABS_VOICE_ID'] ?? 'WSZtzTHUs2DHqN3Itpi1';
-const DEFAULT_MODEL_ID = 'eleven_turbo_v2_5'; // fastest + cheapest English-only tier
+const DEFAULT_MODEL_ID = process.env['ELEVENLABS_TTS_MODEL_ID'] ?? 'eleven_flash_v2_5';
+const DEFAULT_STT_MODEL_ID = process.env['ELEVENLABS_STT_MODEL_ID'] ?? 'scribe_v2';
 
 export async function scoutVoiceRoutes(fastify: FastifyInstance): Promise<void> {
   const apiKey = process.env['ELEVENLABS_API_KEY'];
@@ -47,7 +48,7 @@ export async function scoutVoiceRoutes(fastify: FastifyInstance): Promise<void> 
     const voiceId = parsed.data.voiceId ?? DEFAULT_VOICE_ID;
 
     try {
-      const upstream = await fetch(`${ELEVENLABS_BASE}/v1/text-to-speech/${encodeURIComponent(voiceId)}`, {
+      const upstream = await fetch(`${ELEVENLABS_BASE}/v1/text-to-speech/${encodeURIComponent(voiceId)}?output_format=mp3_44100_128`, {
         method: 'POST',
         headers: {
           'xi-api-key': apiKey,
@@ -100,7 +101,7 @@ export async function scoutVoiceRoutes(fastify: FastifyInstance): Promise<void> 
   }, async (req, reply) => {
     if (!apiKey) return reply.code(503).send({ error: 'Voice service not configured' });
 
-    // We proxy the multipart body directly. Consumer-Type is copied from
+    // We proxy the multipart body directly. Content-Type is copied from
     // the inbound request so the ElevenLabs parser sees the right boundary.
     const contentType = req.headers['content-type'];
     if (!contentType || !contentType.startsWith('multipart/')) {
@@ -144,4 +145,12 @@ export async function scoutVoiceRoutes(fastify: FastifyInstance): Promise<void> 
       return reply.code(500).send({ error: 'STT failed' });
     }
   });
+
+  fastify.get('/voice/status', async () => ({
+    configured: Boolean(apiKey),
+    voice_id_configured: Boolean(process.env['ELEVENLABS_VOICE_ID']),
+    voice_id: process.env['ELEVENLABS_VOICE_ID'] ? 'configured' : 'default',
+    tts_model_id: DEFAULT_MODEL_ID,
+    stt_model_id: DEFAULT_STT_MODEL_ID,
+  }));
 }

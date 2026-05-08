@@ -42,6 +42,7 @@ import { tradeRoutes } from './routes/trade.js';
 import { startStatsRefreshJobs } from './jobs/refreshStats.js';
 import { startHighlightsCron } from './jobs/highlightsCron.js';
 import { installAdminAuth } from './middleware/adminAuth.js';
+import { getActiveScoutProvider, getScoutLLMStats } from './services/scoutLLM.js';
 
 const PORT = Number(process.env.PORT ?? 3001);
 const HOST = '0.0.0.0';
@@ -138,13 +139,15 @@ try {
   server.log.info(`PlayGM backend listening on ${HOST}:${PORT}`);
 
   // ─── LLM key presence check (masked) ────────────────────────────────────
-  // Anthropic only (cheapest tier — Haiku 4.5). No OpenAI fallback.
-  const anthropicKey = process.env['ANTHROPIC_API_KEY'];
-  if (anthropicKey) {
-    const masked = `${anthropicKey.slice(0, 10)}***${anthropicKey.slice(-12)}`;
-    server.log.info(`Scout LLM: Anthropic key detected — ${masked} (model: claude-haiku-4-5)`);
+  const activeScoutProvider = getActiveScoutProvider();
+  const scoutModel = getScoutLLMStats().model;
+  const scoutKeyName = activeScoutProvider === 'gemini' ? 'GEMINI_API_KEY' : 'ANTHROPIC_API_KEY';
+  const scoutKey = process.env[scoutKeyName];
+  if (scoutKey) {
+    const masked = `${scoutKey.slice(0, 8)}***${scoutKey.slice(-8)}`;
+    server.log.info(`Scout LLM: ${activeScoutProvider} key detected — ${masked} (model: ${scoutModel})`);
   } else {
-    server.log.warn('Scout LLM: ANTHROPIC_API_KEY not set — /scout/ask will return fallback response');
+    server.log.warn(`Scout LLM: ${scoutKeyName} not set — /scout/ask will return fallback response`);
   }
 
   startDataSync(server.log);      // 24-hr stats refresh

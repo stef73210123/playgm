@@ -19,6 +19,7 @@ import path from 'node:path';
 import {
   probeAnthropic,
   probeElevenLabs,
+  probeGemini,
   probeSupabase,
   probeSportsDb,
   probeWikimedia,
@@ -160,6 +161,7 @@ export async function adminRoutes(fastify: FastifyInstance): Promise<void> {
   fastify.get('/admin/status', async () => {
     const [
       anthropic,
+      gemini,
       elevenlabs,
       supabaseProbe,
       sportsdb,
@@ -170,6 +172,7 @@ export async function adminRoutes(fastify: FastifyInstance): Promise<void> {
       economicMetrics,
     ] = await Promise.all([
       probeAnthropic(),
+      probeGemini(),
       probeElevenLabs(),
       probeSupabase(),
       probeSportsDb(),
@@ -219,6 +222,8 @@ export async function adminRoutes(fastify: FastifyInstance): Promise<void> {
         env: {
           NODE_ENV: process.env['NODE_ENV'] ?? 'development',
           ANTHROPIC_API_KEY: envPresence('ANTHROPIC_API_KEY'),
+          GEMINI_API_KEY: envPresence('GEMINI_API_KEY'),
+          SCOUT_LLM_PROVIDER: process.env['SCOUT_LLM_PROVIDER'] ?? 'gemini',
           ELEVENLABS_API_KEY: envPresence('ELEVENLABS_API_KEY'),
           ELEVENLABS_VOICE_ID: envPresence('ELEVENLABS_VOICE_ID'),
           SUPABASE_URL: envPresence('SUPABASE_URL'),
@@ -230,8 +235,14 @@ export async function adminRoutes(fastify: FastifyInstance): Promise<void> {
       external_services: {
         anthropic: {
           ...anthropic,
-          purpose: "Scout's Takes (Haiku 4.5 LLM) + Card Scanner vision OCR",
+          purpose: 'Fallback Scout LLM + Card Scanner vision OCR',
           model: 'claude-haiku-4-5',
+        },
+        gemini: {
+          ...gemini,
+          purpose: "Default Ask Scout + Scout's Takes LLM",
+          model: 'gemini-2.5-flash',
+          active: (process.env['SCOUT_LLM_PROVIDER'] ?? 'gemini') !== 'anthropic',
         },
         elevenlabs: {
           ...elevenlabs,

@@ -115,6 +115,25 @@ export async function probeAnthropic(): Promise<ProbeResult> {
   });
 }
 
+// ─── Gemini ─────────────────────────────────────────────────────────────────
+// GET /v1beta/models — authenticated Google AI Studio probe. Verifies the
+// Gemini key used by Ask Scout's default backend is present and accepted.
+export async function probeGemini(): Promise<ProbeResult> {
+  return runProbe('gemini', async () => {
+    const key = process.env['GEMINI_API_KEY'];
+    if (!key) return { ok: false, unknown: true, error: 'GEMINI_API_KEY not set' };
+    const res = await withTimeout((signal) =>
+      fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(key)}`, {
+        method: 'GET',
+        signal,
+      }),
+    );
+    return res.ok
+      ? { ok: true }
+      : { ok: false, error: `HTTP ${res.status} ${res.statusText}` };
+  });
+}
+
 // ─── ElevenLabs ─────────────────────────────────────────────────────────────
 // GET /v1/voices — short voices listing. Auth via xi-api-key header.
 export async function probeElevenLabs(): Promise<ProbeResult> {
