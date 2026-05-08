@@ -10,9 +10,10 @@
 import { existsSync, mkdirSync, renameSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { EspnAdapter } from '../services/stats/espnAdapter.js';
+import { ApiSportsAdapter } from '../services/stats/apisportsAdapter.js';
 import { getStatsAdapter } from '../services/stats/index.js';
 import { supabase } from '../db/client.js';
-import type { League, RosterEntry } from '../services/stats/types.js';
+import type { League, RosterEntry, StatsAdapter } from '../services/stats/types.js';
 
 /**
  * Manager / coach position abbrevs that ESPN sometimes emits in roster blobs.
@@ -183,10 +184,24 @@ export async function pullLeague(
   league: League,
   opts: { season: string; seasonLabel: string; outFile: string; notes: string; minGamesPlayed?: number },
 ): Promise<SeasonCache> {
-  const adapter = getStatsAdapter();
+  const adapter: StatsAdapter = getStatsAdapter(league);
   const isEspn = adapter instanceof EspnAdapter;
+  const isApiSports = adapter instanceof ApiSportsAdapter;
   // eslint-disable-next-line no-console
   console.log(`[pull:${league}] adapter=${adapter.sourceName} licensed=${adapter.isLicensedForCommercial}`);
+
+  // API-Sports: tell the adapter the season label so its query strings match
+  // the cache file. NBA pulls "2025-26" → adapter calls /...&season=2025.
+  if (isApiSports && league === 'nba') {
+    (adapter as ApiSportsAdapter).nbaSeasonLabel = opts.season;
+  }
+
+  // API-Sports: pre-warm a per-team stat cache so we make one /players/statistics
+  // call per team rather than one per player. Saves ~95% of quota.
+  let teamStatsCache: Map<string, Map<string, { gamesPlayed: number; stats: Record<string, number> }>> | null = null;
+  if (isApiSports && league === 'nba') {
+    teamStatsCache = new Map();
+  }
 
   const minGP = opts.minGamesPlayed ?? 4;
   const roster = await adapter.fetchLeagueRoster(league);
@@ -200,7 +215,15 @@ export async function pullLeague(
     const base = rosterToCacheBase(r);
     try {
       let projected: { gamesPlayed: number; stats: Record<string, number> };
-      if (isEspn) {
+      if (isApiSports && teamStatsCache && r.teamId) {
+        // Bulk: one call per team, then look up by player id.
+        let bucket = teamStatsCache.get(r.teamId);
+        if (!bucket) {
+          bucket = await (adapter as ApiSportsAdapter).fetchTeamSeasonStats(league, r.teamId);
+          teamStatsCache.set(r.teamId, bucket);
+        }
+        projected = bucket.get(r.id) ?? { gamesPlayed: 0, stats: {} };
+      } else if (isEspn) {
         projected = await (adapter as EspnAdapter).fetchPlayerProjectedStats(league, r.id, r.positionGroup);
       } else {
         const ss = await adapter.fetchPlayerSeasonStats(league, r.id);
@@ -250,8 +273,16 @@ export async function pullLeague(
     league,
     season: opts.season,
     season_label: opts.seasonLabel,
-    source: 'espn-public-api',
-    source_url_pattern: 'https://site.api.espn.com/... + https://sports.core.api.espn.com/...',
+    source: adapter.sourceName === 'espn'
+      ? 'espn-public-api'
+      : adapter.sourceName === 'apisports'
+      ? 'api-sports.io'
+      : adapter.sourceName,
+    source_url_pattern: adapter.sourceName === 'espn'
+      ? 'https://site.api.espn.com/... + https://sports.core.api.espn.com/...'
+      : adapter.sourceName === 'apisports'
+      ? 'https://v2.nba.api-sports.io/... (NBA), v1.american-football / v1.baseball / v2.hockey / v3.football for others'
+      : '',
     fetched_at: new Date().toISOString(),
     notes: `${opts.notes} ${filterNote}`.trim(),
     totals: {
