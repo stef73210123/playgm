@@ -370,6 +370,78 @@ export async function adminRoutes(fastify: FastifyInstance): Promise<void> {
     return { docs: out };
   });
 
+  // Scout LLM provider status — surfaces what the Ask Scout tile needs:
+  // active provider, model, key presence (masked), and today's call counts
+  // alongside the per-tier daily caps. Reads from the same economic metrics
+  // and probe pipeline that /admin/status uses; resilient to either failing.
+  fastify.get('/admin/api/scout-status', async () => {
+    const provider = (process.env['SCOUT_LLM_PROVIDER'] ?? 'gemini') as 'gemini' | 'anthropic';
+    const model = provider === 'anthropic' ? 'claude-haiku-4-5' : 'gemini-2.5-flash';
+    const keyName = provider === 'anthropic' ? 'ANTHROPIC_API_KEY' : 'GEMINI_API_KEY';
+    const apiKey = process.env[keyName] ?? '';
+    const keyPresent = !!apiKey;
+    const keyMasked = apiKey
+      ? `${apiKey.slice(0, 4)}…${apiKey.slice(-4)} (${apiKey.length} chars)`
+      : null;
+
+    // Per-tier caps live in the subscriptions config; fall back to v1 numbers
+    // if the file is unavailable so the tile never goes blank.
+    const capsPerUser: Record<string, number> = {
+      free: 2,
+      starter: 5,
+      playmaker: 10,
+      champion: 20,
+    };
+
+    let callsToday: number | null = null;
+    let callsByTier: Record<string, number> = {};
+    let probeStatus: 'up' | 'down' | 'unknown' = 'unknown';
+    let probeLatencyMs: number | null = null;
+    let probeError: string | null = null;
+
+    try {
+      const econ = await getEconomicMetrics();
+      const ask = econ?.ask_scout;
+      const v = ask?.calls_24h;
+      if (v && typeof v === 'object' && 'value' in v && !v.unmeasured) {
+        callsToday = (v.value as number) ?? null;
+      } else if (typeof v === 'number') {
+        callsToday = v;
+      }
+      const byTier = ask?.calls_24h_by_tier;
+      if (byTier && typeof byTier === 'object' && 'value' in byTier && !byTier.unmeasured) {
+        callsByTier = (byTier.value as Record<string, number>) ?? {};
+      }
+    } catch {
+      // Tolerate failure — leave callsToday/callsByTier as null/{}.
+    }
+
+    try {
+      const probe = provider === 'anthropic' ? await probeAnthropic() : await probeGemini();
+      probeStatus = probe.status;
+      probeLatencyMs = probe.latency_ms ?? null;
+      probeError = (probe as { error?: string }).error ?? null;
+    } catch {
+      probeStatus = 'unknown';
+    }
+
+    return {
+      generated_at: new Date().toISOString(),
+      provider,
+      model,
+      keyPresent,
+      keyMasked,
+      callsToday,
+      callsByTier,
+      capsPerUser,
+      probe: {
+        status: probeStatus,
+        latency_ms: probeLatencyMs,
+        error: probeError,
+      },
+    };
+  });
+
   fastify.get('/admin/dashboard', async (_req, reply) => {
     reply.type('text/html; charset=utf-8');
     return DASHBOARD_HTML;
@@ -571,6 +643,12 @@ const DASHBOARD_HTML = /* html */ `<!doctype html>
   </div>
 
   <section class="pills" id="pills"></section>
+
+  <h2 id="scout" style="margin: 4px 0 12px; font-size: 16px; letter-spacing: 0.4px; color: var(--accent); text-transform: uppercase;">Ask Scout</h2>
+  <div class="card" id="scout-card">
+    <h2>Scout LLM Status</h2>
+    <div id="scout-status-body">Loading…</div>
+  </div>
 
   <div class="grid">
     <div class="card" id="server-card">
@@ -1626,10 +1704,51 @@ const DASHBOARD_HTML = /* html */ `<!doctype html>
       loadScoringTrend();
       loadDocs();
       loadEditorTiles();
+      loadScoutStatus();
     } catch (err) {
       el('error').innerHTML = \`<div class="err-banner">Failed to load /admin/status: \${esc(err.message)}</div>\`;
     }
     countdown = 30;
+  }
+
+  // Renders the Ask Scout LLM status tile (provider, model, today's calls
+  // vs per-tier caps, key-present check). Driven by /admin/api/scout-status,
+  // which combines the live probe with the economic-metrics call counters.
+  async function loadScoutStatus() {
+    const body = el('scout-status-body');
+    if (!body) return;
+    try {
+      const res = await fetch('/admin/api/scout-status', { cache: 'no-store' });
+      if (!res.ok) {
+        body.innerHTML = '<span class="tag down">scout-status ' + res.status + '</span>';
+        return;
+      }
+      const j = await res.json();
+      const probe = j.probe || {};
+      const probeTag = '<span class="tag ' + esc(probe.status || 'unknown') + '">' + esc(probe.status || 'unknown') + '</span>';
+      const caps = j.capsPerUser || {};
+      const byTier = j.callsByTier || {};
+      const tiers = ['free','starter','playmaker','champion'];
+      const capsLine = tiers.map(t => t + ' ' + (caps[t] ?? '—') + '/day').join(' · ');
+      const callsLine = tiers.map(t => t + ': ' + (byTier[t] ?? 0)).join(' · ');
+      const callsTodayStr = (j.callsToday == null) ? '—' : Number(j.callsToday).toLocaleString();
+      const keyTag = j.keyPresent
+        ? '<span class="tag present">present</span>'
+        : '<span class="tag missing">missing</span>';
+      const keyMaskedHtml = j.keyMasked ? ' <code>' + esc(j.keyMasked) + '</code>' : '';
+      body.innerHTML =
+        '<div class="tile-grid">' +
+          '<div class="tile"><div class="label">provider</div><div class="value">' + esc(j.provider) + '</div><div class="sub">' + probeTag + (probe.latency_ms != null ? ' · ' + probe.latency_ms + 'ms' : '') + '</div></div>' +
+          '<div class="tile"><div class="label">model</div><div class="value" style="font-size:14px;">' + esc(j.model) + '</div><div class="sub">active scout llm</div></div>' +
+          '<div class="tile"><div class="label">calls 24h</div><div class="value">' + esc(callsTodayStr) + '</div><div class="sub">all tiers combined</div></div>' +
+          '<div class="tile"><div class="label">api key</div><div class="value" style="font-size:14px;">' + keyTag + '</div><div class="sub">' + keyMaskedHtml + '</div></div>' +
+        '</div>' +
+        '<div class="kv" style="margin-top:10px;"><span class="k">per-user caps</span><span>' + esc(capsLine) + '</span></div>' +
+        '<div class="kv"><span class="k">calls by tier 24h</span><span>' + esc(callsLine) + '</span></div>' +
+        (probe.error ? '<div class="kv"><span class="k">probe error</span><span><code>' + esc(probe.error) + '</code></span></div>' : '');
+    } catch (err) {
+      body.innerHTML = '<span class="tag down">scout-status fetch failed</span>';
+    }
   }
 
   async function loadDocs() {
