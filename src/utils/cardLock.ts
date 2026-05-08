@@ -1,54 +1,64 @@
 /**
- * cardLock.ts — server-authoritative card availability.
+ * cardLock.ts — server-authoritative scout card availability.
  *
- * 2026-05-03 — single-pip / 24h recharge model (GDD §5).
- * Each card has a single energy pip. Once spent, the card auto-recharges
- * back to MAX_ENERGY=1 after RECHARGE_MS has elapsed since lastUsedAt.
- * No separate "depleted vs cooldown" state — the two collapse into one
- * recharge window.
+ * 2026-05-03 v4 — finite-use scout card pips (GDD §5b).
+ *
+ *   • Each scout card has MAX_ENERGY (3) pips representing its remaining
+ *     deploys. A deploy = applying the scout card to a player on the
+ *     roster. Every deploy decrements the pip count by 1.
+ *   • When the pip count reaches 0 the scout card is EXHAUSTED —
+ *     permanently spent. No recharge, no cooldown, no time-based logic.
+ *   • Owning another copy of the same scout card gives an independent
+ *     fresh pip counter; copies are tracked as separate rows in
+ *     owned_scout_cards.
+ *
+ * The schema's `owned_scout_cards.energy` column (INT 0-3 default 3) IS
+ * the pip counter. The `last_used_at` column is now analytics-only.
  *
  * Spec: data/economy/pgm_card_energy.json
  */
 
-const RECHARGE_MS = 24 * 60 * 60 * 1000; // 24 hours
-const MAX_ENERGY = 1;
+const MAX_ENERGY = 3;
 
-/** Backwards-compatible alias — older callers still import COOLDOWN_MS. */
-export const COOLDOWN_MS = RECHARGE_MS;
-export { RECHARGE_MS, MAX_ENERGY };
+/** Legacy aliases — kept for back-compat with imports that still expect a
+ *  time-based constant. Set to 0 so any caller that still uses them in a
+ *  computation falls into the "no cooldown" branch. */
+export const RECHARGE_MS = 0;
+export const COOLDOWN_MS = 0;
+export { MAX_ENERGY };
 
 export interface CardAvailability {
   available: boolean;
+  /** Always null under v4 — there is no recharge end time. */
   cooldownEndsAt: Date | null;
   reason?: string;
 }
 
+/**
+ * Returns deploy availability under the finite-use model.
+ * @param _lastUsedAt   No longer consulted; retained for signature stability.
+ * @param energy        Pips remaining on the scout card (0..MAX_ENERGY).
+ */
 export function isCardAvailable(
-  lastUsedAt: Date | null,
-  energy: number
+  _lastUsedAt: Date | null,
+  energy: number,
 ): CardAvailability {
-  // Already at full charge → ready immediately, regardless of lastUsedAt.
-  if (energy >= MAX_ENERGY) {
+  if (energy > 0) {
     return { available: true, cooldownEndsAt: null };
   }
-
-  // Energy is 0 (or otherwise <1). If recharge timer has expired since
-  // last use, treat as ready — the persisted energy field will be
-  // reconciled to MAX_ENERGY on next write.
-  if (lastUsedAt === null) {
-    return { available: true, cooldownEndsAt: null };
-  }
-
-  const elapsed = Date.now() - lastUsedAt.getTime();
-
-  if (elapsed >= RECHARGE_MS) {
-    return { available: true, cooldownEndsAt: null };
-  }
-
-  const cooldownEndsAt = new Date(lastUsedAt.getTime() + RECHARGE_MS);
   return {
     available: false,
-    cooldownEndsAt,
-    reason: `Card recharging until ${cooldownEndsAt.toISOString()}.`,
+    cooldownEndsAt: null,
+    reason: 'This scout card is exhausted — scan or earn another to deploy again.',
   };
+}
+
+/** True when the scout card has been used up (no pips remain). */
+export function isCardRetired(energy: number): boolean {
+  return Math.max(0, Math.min(MAX_ENERGY, energy)) === 0;
+}
+
+/** Pips remaining, clamped to [0, MAX_ENERGY]. */
+export function pipsRemaining(energy: number): number {
+  return Math.max(0, Math.min(MAX_ENERGY, energy));
 }
