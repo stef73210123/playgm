@@ -16,6 +16,11 @@ import Fastify from 'fastify';
 process.env['SUPABASE_URL'] = process.env['SUPABASE_URL'] ?? 'https://stub.supabase.co';
 process.env['SUPABASE_SERVICE_KEY'] = process.env['SUPABASE_SERVICE_KEY'] ?? 'stub';
 process.env['ANTHROPIC_API_KEY'] = process.env['ANTHROPIC_API_KEY'] ?? 'test-key';
+// Pin the dispatcher to the Anthropic backend for this test — these
+// suites mock `@anthropic-ai/sdk` and assert on its mock counter. The
+// production default flipped to Gemini in 2026-05; pinning here keeps
+// the limiter assertions independent of the active backend.
+process.env['SCOUT_LLM_PROVIDER'] = 'anthropic';
 
 interface UsageRow { user_id: string; ymd: string; count: number; last_request_at: string }
 const mockUsageStore = new Map<string, UsageRow>();
