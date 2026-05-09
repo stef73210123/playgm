@@ -7,8 +7,8 @@
   "scripts": {
     "dev": "tsx watch --import ./src/env-loader.ts src/index.ts",
     "build": "tsc --outDir dist",
-    "start": "tsx --import ./src/env-loader.ts src/index.ts",
-    "start:compiled": "node dist/src/index.js",
+    "start": "node --import ./dist/src/env-loader.js dist/src/index.js",
+    "start:tsx": "tsx --import ./src/env-loader.ts src/index.ts",
     "typecheck": "tsc --noEmit",
     "populate": "tsx --import ./src/env-loader.ts src/scripts/populate.ts",
     "probe-sportsdb": "tsx --import ./src/env-loader.ts src/scripts/probe-sportsdb.ts",

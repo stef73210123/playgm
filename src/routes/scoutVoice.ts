@@ -117,16 +117,17 @@ export async function scoutVoiceRoutes(fastify: FastifyInstance): Promise<void> 
     }
 
     try {
-      // Undici's fetch typings don't list Buffer/Uint8Array in BodyInit even
-      // though the runtime accepts both. Cast through `unknown` to BodyInit
-      // so we pass the bytes through without copying into a Blob first.
+      // Undici's fetch typings don't list Buffer/Uint8Array in the body type
+      // even though the runtime accepts both. Cast through `unknown` to keep
+      // the bytes flowing without copying into a Blob first. Avoid `BodyInit`
+      // explicitly — that DOM lib type isn't loaded in this Node-only tsconfig.
       const upstream = await fetch(`${ELEVENLABS_BASE}/v1/speech-to-text`, {
         method: 'POST',
         headers: {
           'xi-api-key': apiKey,
           'Content-Type': contentType,
         },
-        body: rawBody as unknown as BodyInit,
+        body: rawBody as unknown as RequestInit['body'],
       });
 
       if (!upstream.ok) {
