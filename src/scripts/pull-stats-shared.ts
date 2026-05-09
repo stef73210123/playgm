@@ -323,7 +323,23 @@ export async function dualWritePlayerStats(
   }
   if (players.length === 0) return;
   const fetched_at = new Date().toISOString();
-  const rows = players.map((p) => ({
+  // Dedupe by (player_id, sport, season) — Postgres' ON CONFLICT can't affect
+  // the same row twice in a single statement, and API-Sports occasionally
+  // emits the same player on two rosters (mid-season trades, two-way
+  // contracts). Last write wins; we prefer the row with the most stats.
+  const dedup = new Map<string, PlayerCacheEntry>();
+  for (const p of players) {
+    const key = `${p.external_id}|${league}|${season}`;
+    const prev = dedup.get(key);
+    if (!prev) {
+      dedup.set(key, p);
+      continue;
+    }
+    const prevKeys = Object.keys(prev.stats ?? {}).length;
+    const nextKeys = Object.keys(p.stats ?? {}).length;
+    if (nextKeys >= prevKeys) dedup.set(key, p);
+  }
+  const rows = Array.from(dedup.values()).map((p) => ({
     player_id: p.external_id,
     sport: league,
     season,
