@@ -142,6 +142,29 @@ function set(o: Record<string, number>, key: string, value: number | undefined) 
   if (value !== undefined) o[key] = value;
 }
 
+/**
+ * Convert MLB innings_pitched (baseball fractional format — "145.2" means
+ * 145⅔ innings, NOT 145.2) into a plain count of outs. 145.2 → 437 outs.
+ * The fractional digit is always 0, 1, or 2. Anything else gets clamped
+ * to 0 so we don't quietly produce nonsense from typos.
+ */
+export function baseballIpToOuts(ip: number): number {
+  if (!Number.isFinite(ip) || ip <= 0) return 0;
+  const whole = Math.floor(ip);
+  // Use a string projection to dodge IEEE-754 surprises ((6.2 * 10) % 10 = 1.999…).
+  const frac = Number(ip.toFixed(1).split('.')[1] ?? '0');
+  const thirds = frac === 1 ? 1 : frac === 2 ? 2 : 0;
+  return whole * 3 + thirds;
+}
+
+/** Inverse of baseballIpToOuts. 437 → "145.2" → 145.2 (number). */
+export function outsToBaseballIp(outs: number): number {
+  if (!Number.isFinite(outs) || outs <= 0) return 0;
+  const whole = Math.floor(outs / 3);
+  const thirds = outs % 3;
+  return whole + thirds / 10;
+}
+
 function extractStats(league: League, blob: EspnAthleteStats, positionGroup: string): Record<string, number> {
   const o: Record<string, number> = {};
   switch (league) {
@@ -198,6 +221,17 @@ function extractStats(league: League, blob: EspnAthleteStats, positionGroup: str
         set(o, 'k_pitcher', num(pickStat(blob, 'pitching', 'strikeouts')));
         set(o, 'whip', num(pickStat(blob, 'pitching', 'WHIP')));
         set(o, 'saves', num(pickStat(blob, 'pitching', 'saves')));
+        // Merge-friendly counter totals. innings_pitched is in baseball
+        // fractional format ("145.2" = 145⅔ innings, not 145.2), which can't
+        // be summed with normal addition. We project it into outs_pitched
+        // (an integer count of outs — 145⅔ = 437 outs) so mergePlayerStints
+        // can sum stints exactly and convert back to baseball format on
+        // read. earned_runs lets us recompute ERA from summed outs/ER.
+        const ip = num(pickStat(blob, 'pitching', 'innings'));
+        if (ip !== undefined) set(o, 'outs_pitched', baseballIpToOuts(ip));
+        set(o, 'earned_runs', num(pickStat(blob, 'pitching', 'earnedRuns')));
+        set(o, 'walks_allowed', num(pickStat(blob, 'pitching', 'walks')));
+        set(o, 'hits_allowed', num(pickStat(blob, 'pitching', 'hits')));
       } else {
         set(o, 'avg', num(pickStat(blob, 'batting', 'avg')));
         set(o, 'hits', num(pickStat(blob, 'batting', 'hits')));
@@ -207,6 +241,15 @@ function extractStats(league: League, blob: EspnAthleteStats, positionGroup: str
         set(o, 'sb', num(pickStat(blob, 'batting', 'stolenBases')));
         set(o, 'obp', num(pickStat(blob, 'batting', 'onBasePct')));
         set(o, 'slg', num(pickStat(blob, 'batting', 'slugAvg')));
+        // Counter totals so mergePlayerStints can recompute avg / obp / slg
+        // from summed counters: avg = H/AB, obp = (H+BB+HBP)/(AB+BB+HBP+SF),
+        // slg = TB/AB. ESPN exposes all of these under the 'batting'
+        // category. Existing readers don't reference them; additive only.
+        set(o, 'at_bats',     num(pickStat(blob, 'batting', 'atBats')));
+        set(o, 'walks',       num(pickStat(blob, 'batting', 'walks')));
+        set(o, 'hit_by_pitch', num(pickStat(blob, 'batting', 'hitByPitch')));
+        set(o, 'sac_flies',   num(pickStat(blob, 'batting', 'sacFlies')));
+        set(o, 'total_bases', num(pickStat(blob, 'batting', 'totalBases')));
       }
       return o;
     }

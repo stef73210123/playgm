@@ -27,9 +27,9 @@
  */
 import type { FastifyInstance } from 'fastify';
 import {
-  findPlayerByName,
-  findPlayersByTeam,
-  findPlayer,
+  findPlayerByNameAsync,
+  findPlayersByTeamAsync,
+  findPlayerAsync,
   getPlayerRating,
   getPlayerStats,
 } from '../services/ratings/cacheLookup.js';
@@ -247,7 +247,7 @@ export async function statLineRoutes(fastify: FastifyInstance): Promise<void> {
       }
       // No-league lookups: filter the per-team hits by sport-enabled so we
       // never leak disabled-sport data even when the client doesn't know.
-      const hits = findPlayersByTeam(teamName).filter(
+      const hits = (await findPlayersByTeamAsync(teamName)).filter(
         (h) => (!wantLeague || h.league === wantLeague) && isSportEnabled(h.league),
       );
       const out = await Promise.all(hits.map((h) => buildResponse(h.player, h.league)));
@@ -263,7 +263,7 @@ export async function statLineRoutes(fastify: FastifyInstance): Promise<void> {
       if (!name) {
         return reply.code(400).send({ error: 'name_required' });
       }
-      const hit = findPlayerByName(name, team || undefined);
+      const hit = await findPlayerByNameAsync(name, team || undefined);
       if (!hit) {
         return reply.send({ player: null });
       }
@@ -281,7 +281,7 @@ export async function statLineRoutes(fastify: FastifyInstance): Promise<void> {
     '/api/stats/player/by-id/:externalId',
     async (req, reply) => {
       const id = decodeURIComponent(req.params.externalId);
-      const hit = findPlayer(id);
+      const hit = await findPlayerAsync(id);
       if (!hit) {
         return reply.code(404).send({ error: 'player_not_found', player_id: id });
       }

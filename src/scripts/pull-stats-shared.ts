@@ -9,7 +9,7 @@
  */
 import { existsSync, mkdirSync, renameSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
-import { EspnAdapter } from '../services/stats/espnAdapter.js';
+import { EspnAdapter, outsToBaseballIp } from '../services/stats/espnAdapter.js';
 import { ApiSportsAdapter } from '../services/stats/apisportsAdapter.js';
 import { getStatsAdapter } from '../services/stats/index.js';
 import { supabase } from '../db/client.js';
@@ -303,12 +303,212 @@ export async function pullLeague(
   return cache;
 }
 
+// ─── Stat merge for traded / two-way players ────────────────────────────────
+//
+// API-Sports emits the same player on multiple rosters when they got traded
+// mid-season (Klay Thompson, Pascal Siakam, Buddy Hield in 2024-25) or signed
+// a two-way contract — once per stint. The previous dedup picked whichever
+// row had more stat keys and dropped the other; that loses an entire stint
+// of production. mergePlayerStints fixes this by:
+//
+//   1. Summing every counter total emitted by the adapter (gp, points_total,
+//      fgm_total, … plus per-league counter keys for MLB pitcher / hitter).
+//   2. Recomputing per-game averages from the summed totals.
+//   3. Recomputing rate stats (fg_pct, ft_pct, era, obp, slg, avg) from the
+//      summed counter pairs.
+//   4. Picking the "current" team as the last stint in input order
+//      (API-Sports iteration is roughly chronological; on tie we prefer the
+//      stint with non-zero GP since a roster artifact for an unplayed team
+//      sometimes shows up after the real current team).
+//   5. Recording every other team in `previous_teams: string[]` (in
+//      first-seen order, dedup'd, current team excluded).
+//
+// All counter / total keys are listed explicitly per league so we never sum
+// a key whose semantics aren't summable (e.g. ERA, AVG). Anything not in
+// the per-league counter set on the source row is preserved on the chosen
+// "current" stint as-is — it'll get overwritten by the recompute step if
+// it's a derived value.
+
+interface MergeResult {
+  player: PlayerCacheEntry;
+  previous_teams: string[];
+}
+
+/** Counter keys that are safe to sum across stints, per league. */
+const COUNTER_KEYS_BY_LEAGUE: Record<League, readonly string[]> = {
+  nba: [
+    'games_played',
+    'points_total', 'rebounds_total', 'assists_total', 'steals_total',
+    'blocks_total', 'three_pm_total', 'minutes_total',
+    'fgm_total', 'fga_total', 'ftm_total', 'fta_total',
+  ],
+  mlb: [
+    'games_played',
+    // Pitcher
+    'wins', 'losses', 'saves', 'k_pitcher',
+    'outs_pitched', 'earned_runs', 'walks_allowed', 'hits_allowed',
+    // Hitter
+    'hits', 'hr', 'rbi', 'runs', 'sb',
+    'at_bats', 'walks', 'hit_by_pitch', 'sac_flies', 'total_bases',
+  ],
+  nfl: [
+    'games_played',
+    'passing_yards', 'passing_touchdowns', 'interceptions',
+    'rushing_yards', 'rushing_touchdowns',
+    'receptions', 'receiving_yards', 'receiving_touchdowns', 'targets',
+    'tackles', 'sacks', 'ints_def', 'fg_made',
+  ],
+  nhl: [
+    'games_played',
+    'goals', 'assists', 'sog', 'plus_minus', 'blocks', 'pim',
+    'wins', 'shutouts', 'saves',
+  ],
+  mls: [
+    'games_played',
+    'goals', 'assists', 'shots', 'tackles', 'saves', 'clean_sheets',
+  ],
+};
+
+/** Sum the listed counter keys across `stints` into a fresh stats record. */
+function sumCounters(league: League, stints: PlayerCacheEntry[]): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const key of COUNTER_KEYS_BY_LEAGUE[league]) {
+    let total = 0;
+    let any = false;
+    for (const s of stints) {
+      const v = s.stats?.[key];
+      if (typeof v === 'number' && Number.isFinite(v)) {
+        total += v;
+        any = true;
+      }
+    }
+    if (any) out[key] = total;
+  }
+  return out;
+}
+
+/** Round helper — mirrors apisportsAdapter.round. */
+function roundN(n: number, d: number): number {
+  const m = 10 ** d;
+  return Math.round(n * m) / m;
+}
+
+/**
+ * Recompute per-game averages and rate stats from summed counter totals.
+ * Mutates `merged` in place — assumes `sumCounters` has already populated
+ * the `*_total` keys (NBA) or the canonical counter keys (MLB / others).
+ */
+function recomputeDerived(league: League, merged: Record<string, number>): void {
+  const gp = merged.games_played ?? 0;
+  switch (league) {
+    case 'nba': {
+      if (gp > 0) {
+        merged.points   = roundN((merged.points_total   ?? 0) / gp, 1);
+        merged.rebounds = roundN((merged.rebounds_total ?? 0) / gp, 1);
+        merged.assists  = roundN((merged.assists_total  ?? 0) / gp, 1);
+        merged.steals   = roundN((merged.steals_total   ?? 0) / gp, 1);
+        merged.blocks   = roundN((merged.blocks_total   ?? 0) / gp, 1);
+        merged.three_pm = roundN((merged.three_pm_total ?? 0) / gp, 1);
+        merged.minutes  = roundN((merged.minutes_total  ?? 0) / gp, 1);
+      } else {
+        merged.points = merged.rebounds = merged.assists = 0;
+        merged.steals = merged.blocks = merged.three_pm = merged.minutes = 0;
+      }
+      const fga = merged.fga_total ?? 0;
+      const fta = merged.fta_total ?? 0;
+      merged.fg_pct = fga ? roundN(((merged.fgm_total ?? 0) / fga) * 100, 1) : 0;
+      merged.ft_pct = fta ? roundN(((merged.ftm_total ?? 0) / fta) * 100, 1) : 0;
+      break;
+    }
+    case 'mlb': {
+      // Pitcher: ERA = ER * 9 / IP; convert outs back to baseball-format IP.
+      if (typeof merged.outs_pitched === 'number') {
+        merged.innings_pitched = roundN(outsToBaseballIp(merged.outs_pitched), 1);
+        // True innings (decimal) for ERA / WHIP — outs/3.
+        const trueInn = merged.outs_pitched / 3;
+        merged.era = trueInn ? roundN(((merged.earned_runs ?? 0) * 9) / trueInn, 2) : 0;
+        const baserunners = (merged.walks_allowed ?? 0) + (merged.hits_allowed ?? 0);
+        merged.whip = trueInn ? roundN(baserunners / trueInn, 3) : 0;
+      }
+      // Hitter: avg = H/AB; obp = (H+BB+HBP)/(AB+BB+HBP+SF); slg = TB/AB.
+      const ab = merged.at_bats ?? 0;
+      if (ab > 0) {
+        merged.avg = roundN((merged.hits ?? 0) / ab, 3);
+        merged.slg = roundN((merged.total_bases ?? 0) / ab, 3);
+        const obpDen = ab + (merged.walks ?? 0) + (merged.hit_by_pitch ?? 0) + (merged.sac_flies ?? 0);
+        merged.obp = obpDen
+          ? roundN(
+              ((merged.hits ?? 0) + (merged.walks ?? 0) + (merged.hit_by_pitch ?? 0)) / obpDen,
+              3,
+            )
+          : 0;
+      }
+      break;
+    }
+    // NFL / NHL / MLS counters are already raw season totals; no per-game
+    // averaging step needed today. Add cases here when those leagues move
+    // to per-game-emitting adapters.
+    case 'nfl':
+    case 'nhl':
+    case 'mls':
+      break;
+  }
+}
+
+/** Pick the "current" stint and return the merged entry + previous_teams. */
+export function mergePlayerStints(
+  league: League,
+  stints: PlayerCacheEntry[],
+): MergeResult {
+  if (stints.length === 1) {
+    return { player: stints[0], previous_teams: [] };
+  }
+  // Heuristic: API-Sports iteration order is roughly chronological — the
+  // last stint is usually the player's current team. If that last entry
+  // has zero games played (a roster artifact for an upcoming team that
+  // hasn't logged games yet), fall back to the highest-GP stint instead.
+  let current = stints[stints.length - 1];
+  if ((current.stats?.games_played ?? 0) === 0) {
+    for (const s of stints) {
+      if ((s.stats?.games_played ?? 0) > (current.stats?.games_played ?? 0)) {
+        current = s;
+      }
+    }
+  }
+  const previous_teams: string[] = [];
+  for (const s of stints) {
+    if (s === current) continue;
+    if (s.team && !previous_teams.includes(s.team) && s.team !== current.team) {
+      previous_teams.push(s.team);
+    }
+  }
+  // Build merged stats: start from current's bag, overwrite the summable
+  // keys with the across-stints sums, then recompute per-game / rate stats
+  // from those sums.
+  const merged: Record<string, number> = { ...(current.stats ?? {}) };
+  const summed = sumCounters(league, stints);
+  Object.assign(merged, summed);
+  recomputeDerived(league, merged);
+  // The merged player keeps current's identity / bio; only stats are merged.
+  // team_abbr stays current's; previous_teams flows through to the upsert.
+  return {
+    player: { ...current, stats: merged },
+    previous_teams,
+  };
+}
+
 /**
  * Best-effort upsert of the cleaned player set into Supabase `player_stats`.
  *
  * - Uses the service-role client from `db/client.ts`.
- * - Requires the v1 stats schema (player_stats(player_id, sport, season,
- *   stats_json, fetched_at) — see migrations/001_v1_schema.sql).
+ * - Requires the v1 stats schema + the 011_previous_teams.sql additions
+ *   (player_stats(player_id, sport, season, stats_json, fetched_at, team,
+ *   team_abbr, previous_teams[], full_name, position, position_group,
+ *   jersey_number, bio_json) — see migrations/011_previous_teams.sql).
+ * - When a player appears in `players` more than once for the same season
+ *   (mid-season trade, two-way contract), mergePlayerStints folds the
+ *   stints into a single row with merged counter totals + recomputed
+ *   averages and the prior teams listed in previous_teams[].
  * - Logs and returns on error; the JSON cache remains source of truth.
  */
 export async function dualWritePlayerStats(
@@ -323,29 +523,63 @@ export async function dualWritePlayerStats(
   }
   if (players.length === 0) return;
   const fetched_at = new Date().toISOString();
-  // Dedupe by (player_id, sport, season) — Postgres' ON CONFLICT can't affect
-  // the same row twice in a single statement, and API-Sports occasionally
-  // emits the same player on two rosters (mid-season trades, two-way
-  // contracts). Last write wins; we prefer the row with the most stats.
-  const dedup = new Map<string, PlayerCacheEntry>();
+
+  // Group stints by (player_id, league, season). Preserve input order so
+  // mergePlayerStints can apply its "last stint is current team" heuristic.
+  const grouped = new Map<string, PlayerCacheEntry[]>();
   for (const p of players) {
     const key = `${p.external_id}|${league}|${season}`;
-    const prev = dedup.get(key);
-    if (!prev) {
-      dedup.set(key, p);
-      continue;
+    let arr = grouped.get(key);
+    if (!arr) {
+      arr = [];
+      grouped.set(key, arr);
     }
-    const prevKeys = Object.keys(prev.stats ?? {}).length;
-    const nextKeys = Object.keys(p.stats ?? {}).length;
-    if (nextKeys >= prevKeys) dedup.set(key, p);
+    arr.push(p);
   }
-  const rows = Array.from(dedup.values()).map((p) => ({
-    player_id: p.external_id,
-    sport: league,
-    season,
-    stats_json: p.stats,
-    fetched_at,
-  }));
+
+  let mergedCount = 0;
+  const rows = Array.from(grouped.values()).map((stints) => {
+    if (stints.length > 1) mergedCount++;
+    const { player, previous_teams } = mergePlayerStints(league, stints);
+    return {
+      player_id: player.external_id,
+      sport: league,
+      season,
+      stats_json: player.stats,
+      fetched_at,
+      // Top-level metadata for the team-search route. Indexed in 011.
+      team: player.team,
+      team_abbr: player.team_abbr,
+      previous_teams,
+      full_name: player.full_name,
+      position: player.position,
+      position_group: player.position_group,
+      jersey_number: player.jersey_number ?? null,
+      bio_json: {
+        first_name:        player.first_name ?? null,
+        last_name:         player.last_name ?? null,
+        height_inches:     player.height_inches ?? null,
+        weight_lb:         player.weight_lb ?? null,
+        date_of_birth:     player.date_of_birth ?? null,
+        hometown:          player.hometown ?? null,
+        years_in_league:   player.years_in_league ?? null,
+        draft_year:        player.draft_year ?? null,
+        draft_round:       player.draft_round ?? null,
+        draft_pick_overall: player.draft_pick_overall ?? null,
+        is_active:         player.is_active ?? true,
+        team_color_primary:   player.team_color_primary ?? null,
+        team_color_secondary: player.team_color_secondary ?? null,
+      },
+    };
+  });
+
+  if (mergedCount > 0) {
+    // eslint-disable-next-line no-console
+    console.log(
+      `[supabase] merged ${mergedCount} multi-stint player(s) into single rows ` +
+        `(traded / two-way) before upsert.`,
+    );
+  }
 
   // Chunk to keep the request body reasonable (~1000 rows each).
   const CHUNK = 1000;

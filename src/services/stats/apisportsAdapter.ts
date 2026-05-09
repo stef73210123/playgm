@@ -299,6 +299,22 @@ export function aggregateNbaSeason(
       minutes: gp ? round(agg.sumMin / gp, 1) : 0,
       fg_pct: agg.sumFga ? round((agg.sumFgm / agg.sumFga) * 100, 1) : 0,
       ft_pct: agg.sumFta ? round((agg.sumFtm / agg.sumFta) * 100, 1) : 0,
+      // Counter totals — kept alongside the per-game averages so
+      // pull-stats-shared.mergePlayerStints() can sum across stints (mid-season
+      // trades, two-way contracts) and recompute averages / rate stats without
+      // rounding error. Existing readers ignore unknown keys, so this is
+      // additive only.
+      points_total:   agg.sumPts,
+      rebounds_total: agg.sumReb,
+      assists_total:  agg.sumAst,
+      steals_total:   agg.sumStl,
+      blocks_total:   agg.sumBlk,
+      three_pm_total: agg.sumTpm,
+      minutes_total:  agg.sumMin,
+      fgm_total:      agg.sumFgm,
+      fga_total:      agg.sumFga,
+      ftm_total:      agg.sumFtm,
+      fta_total:      agg.sumFta,
     };
     out.set(id, { gamesPlayed: gp, stats });
   }

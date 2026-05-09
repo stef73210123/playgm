@@ -175,10 +175,172 @@ export function findPlayersByTeam(team: string): CacheLookup[] {
   return out;
 }
 
+/**
+ * Async, Supabase-aware sibling of findPlayersByTeam. Tries the local JSON
+ * cache first (great for dev); on miss / empty result, queries the Supabase
+ * `player_stats` table populated by dualWritePlayerStats. The Supabase
+ * branch matches by `team` (case-insensitive substring), `team_abbr`
+ * (case-insensitive equality), and `previous_teams` (case-insensitive
+ * substring across array elements). Current-team rows rank ahead of
+ * previous-team rows so a search for "Warriors" returns Steph + Draymond
+ * (current Warriors) before Klay (former Warrior, now on Dallas).
+ *
+ * Response shape: each Supabase row is reconstructed into a
+ * `PlayerCacheEntry`-compatible object so `buildResponse` in
+ * routes/statLines.ts produces the same JSON it would for a JSON-cache hit.
+ */
+export async function findPlayersByTeamAsync(team: string): Promise<CacheLookup[]> {
+  const localHits = findPlayersByTeam(team);
+  if (localHits.length > 0) return localHits;
+  return findPlayersByTeamSupabase(team);
+}
+
+/** Async sibling of findPlayer (Supabase fallback on cache miss). */
+export async function findPlayerAsync(playerId: string): Promise<CacheLookup | null> {
+  const local = findPlayer(playerId);
+  if (local) return local;
+  try {
+    const { data, error } = await supabase
+      .from('player_stats')
+      .select('*')
+      .eq('player_id', playerId)
+      .order('fetched_at', { ascending: false })
+      .limit(1);
+    if (error || !data || data.length === 0) return null;
+    return supabaseRowToLookup(data[0] as SupabasePlayerStatsRow);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Async sibling of findPlayerByName. The local cache path is the fast
+ * path; the Supabase fallback uses `full_name` ILIKE + optional team
+ * filter. Returns the first match.
+ */
+export async function findPlayerByNameAsync(
+  fullName: string,
+  team?: string,
+): Promise<CacheLookup | null> {
+  const local = findPlayerByName(fullName, team);
+  if (local) return local;
+  const n = fullName.trim();
+  if (!n) return null;
+  try {
+    let q = supabase.from('player_stats').select('*').ilike('full_name', n);
+    if (team && team.trim()) q = q.ilike('team', `%${team.trim()}%`);
+    const { data, error } = await q.limit(1);
+    if (error || !data || data.length === 0) return null;
+    return supabaseRowToLookup(data[0] as SupabasePlayerStatsRow);
+  } catch {
+    return null;
+  }
+}
+
 export function clearCacheLookups(): void {
   for (const k of Object.keys(loaded) as League[]) {
     delete loaded[k];
   }
+}
+
+// ─── Supabase team-search ───────────────────────────────────────────────────
+
+/** Shape of a row coming back from `select * from player_stats`. */
+interface SupabasePlayerStatsRow {
+  player_id: string;
+  sport: League;
+  season: string;
+  stats_json: Record<string, number>;
+  fetched_at: string;
+  team: string | null;
+  team_abbr: string | null;
+  previous_teams: string[] | null;
+  full_name: string | null;
+  position: string | null;
+  position_group: string | null;
+  jersey_number: number | null;
+  bio_json: Record<string, unknown> | null;
+}
+
+function rowToCacheEntry(row: SupabasePlayerStatsRow): PlayerCacheEntry {
+  const bio = row.bio_json ?? {};
+  const num = (k: string): number | null => {
+    const v = (bio as Record<string, unknown>)[k];
+    return typeof v === 'number' ? v : null;
+  };
+  const str = (k: string): string | null => {
+    const v = (bio as Record<string, unknown>)[k];
+    return typeof v === 'string' ? v : null;
+  };
+  return {
+    external_id: row.player_id,
+    full_name: row.full_name ?? row.player_id,
+    first_name: str('first_name') ?? undefined,
+    last_name: str('last_name') ?? undefined,
+    team: row.team ?? '',
+    team_abbr: row.team_abbr ?? '',
+    team_color_primary: str('team_color_primary') ?? undefined,
+    team_color_secondary: str('team_color_secondary') ?? undefined,
+    position: row.position ?? '',
+    position_group: row.position_group ?? '',
+    jersey_number: row.jersey_number ?? null,
+    height_inches: num('height_inches'),
+    weight_lb: num('weight_lb'),
+    date_of_birth: str('date_of_birth'),
+    hometown: str('hometown'),
+    draft_year: num('draft_year'),
+    draft_round: num('draft_round'),
+    draft_pick_overall: num('draft_pick_overall'),
+    years_in_league: num('years_in_league'),
+    is_active: typeof (bio as Record<string, unknown>).is_active === 'boolean'
+      ? Boolean((bio as Record<string, unknown>).is_active)
+      : true,
+    stats: row.stats_json ?? {},
+  };
+}
+
+function supabaseRowToLookup(row: SupabasePlayerStatsRow): CacheLookup {
+  return { league: row.sport, player: rowToCacheEntry(row) };
+}
+
+async function findPlayersByTeamSupabase(team: string): Promise<CacheLookup[]> {
+  const search = team.trim();
+  if (!search) return [];
+  const ilikePat = `%${search}%`;
+  // Two queries combined client-side:
+  //  1. Current-team / abbreviation match — uses the lower(team) and
+  //     lower(team_abbr) functional indexes from migration 011.
+  //  2. Previous-team match — pulled via a coarse "has non-empty
+  //     previous_teams" filter, then refined in code with a substring scan
+  //     over the array elements. With ~600 NBA + ~750 MLB rows this is
+  //     trivial; we revisit if the previous_teams histogram grows.
+  let currentRows: SupabasePlayerStatsRow[] = [];
+  let prevRowsRaw: SupabasePlayerStatsRow[] = [];
+  try {
+    const { data, error } = await supabase
+      .from('player_stats')
+      .select('*')
+      .or(`team.ilike.${ilikePat},team_abbr.ilike.${search}`);
+    if (!error && data) currentRows = data as SupabasePlayerStatsRow[];
+  } catch { /* fall through — empty */ }
+  try {
+    const { data, error } = await supabase
+      .from('player_stats')
+      .select('*')
+      .neq('previous_teams', '{}');
+    if (!error && data) prevRowsRaw = data as SupabasePlayerStatsRow[];
+  } catch { /* fall through — empty */ }
+
+  const seen = new Set<string>(currentRows.map((r) => `${r.player_id}|${r.sport}|${r.season}`));
+  const lowerSearch = search.toLowerCase();
+  const prevRows = prevRowsRaw.filter((r) => {
+    const k = `${r.player_id}|${r.sport}|${r.season}`;
+    if (seen.has(k)) return false;
+    const arr = r.previous_teams ?? [];
+    return arr.some((p) => typeof p === 'string' && p.toLowerCase().includes(lowerSearch));
+  });
+
+  return [...currentRows, ...prevRows].map(supabaseRowToLookup);
 }
 
 // ─── Supabase-first read paths (best-effort) ────────────────────────────────
