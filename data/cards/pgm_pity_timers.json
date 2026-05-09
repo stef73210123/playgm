@@ -1,0 +1,21 @@
+{
+  "version": "3.0.0",
+  "pity_timers": [
+    {
+      "id": "rare_plus",
+      "description": "Guarantees a Rare+ card after a streak without one.",
+      "trigger_threshold": 30,
+      "tracking_unit": "consecutive_packs_opened_without_rare_or_higher",
+      "guarantee": "next_pack_upgrade_one_slot_to_rare_or_higher",
+      "reset_on": "any_rare_plus_pull"
+    },
+    {
+      "id": "legendary_pity",
+      "description": "Guarantees a Legendary after a long streak without one.",
+      "trigger_threshold": 150,
+      "tracking_unit": "consecutive_cards_opened_without_legendary",
+      "guarantee": "next_epic_or_higher_slot_upgrades_to_legendary",
+      "reset_on": "any_legendary_pull_from_any_source"
+    }
+  ]
+}

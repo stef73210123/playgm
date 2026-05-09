@@ -1,0 +1,65 @@
+{
+  "version": "3.0.0",
+  "triggers": [
+    {
+      "trigger_id": "big_game",
+      "name": "Big Game",
+      "description": "Player exceeds season average in primary stat this game.",
+      "data_required": ["this_game_stats", "season_avg"],
+      "params_schema": { "primary_stat": "stat key — sport-specific" },
+      "evaluator_pseudocode": "this_game_stats[primary_stat] > season_avg[primary_stat]",
+      "approximate_trigger_rate": 0.50
+    },
+    {
+      "trigger_id": "win_bonus",
+      "name": "Win Bonus",
+      "description": "Player's team won the game.",
+      "data_required": ["game_result"],
+      "params_schema": {},
+      "evaluator_pseudocode": "game_result.player_team_won == true",
+      "approximate_trigger_rate": 0.50
+    },
+    {
+      "trigger_id": "hot_hand",
+      "name": "Hot Hand",
+      "description": "Player exceeded season average in primary stat in their previous game.",
+      "data_required": ["last_game_stats", "season_avg"],
+      "params_schema": { "primary_stat": "stat key" },
+      "evaluator_pseudocode": "last_game_stats[primary_stat] > season_avg[primary_stat]",
+      "approximate_trigger_rate": 0.50
+    },
+    {
+      "trigger_id": "star_game",
+      "name": "Star Game",
+      "description": "Player exceeds high volume threshold in primary stat.",
+      "data_required": ["this_game_stats"],
+      "params_schema": {
+        "primary_stat": "stat key",
+        "threshold": "sport-specific high-volume threshold"
+      },
+      "evaluator_pseudocode": "this_game_stats[primary_stat] >= threshold",
+      "approximate_trigger_rate": 0.20
+    },
+    {
+      "trigger_id": "stat_stuffer",
+      "name": "Stat Stuffer",
+      "description": "Player records non-zero in 4 or more stat categories.",
+      "data_required": ["this_game_stats"],
+      "params_schema": {
+        "categories": "SPORT_DEFAULT_STATS",
+        "min_categories": 4
+      },
+      "evaluator_pseudocode": "count(s for s in categories if this_game_stats[s] > 0) >= min_categories",
+      "approximate_trigger_rate": 0.35
+    },
+    {
+      "trigger_id": "rivalry",
+      "name": "Rivalry Game",
+      "description": "Game is vs. a division rival per league metadata.",
+      "data_required": ["opponent_meta"],
+      "params_schema": { "scope": "division" },
+      "evaluator_pseudocode": "opponent_meta.is_rival(scope) == true",
+      "approximate_trigger_rate": 0.25
+    }
+  ]
+}

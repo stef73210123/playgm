@@ -1,0 +1,78 @@
+{
+  "version": "3.0.0",
+  "stat_resolution": {
+    "basketball": {
+      "default_primary": "points",
+      "default_secondary": "rebounds",
+      "default_tertiary": "assists",
+      "default_stats": ["points", "rebounds", "assists", "steals", "blocks"],
+      "star_threshold": { "stat": "points", "value": 25 },
+      "by_position": {
+        "PG": { "primary": "assists", "secondary": "points", "tertiary": "steals" },
+        "SG": { "primary": "points", "secondary": "three_pm", "tertiary": "assists" },
+        "SF": { "primary": "points", "secondary": "rebounds", "tertiary": "assists" },
+        "PF": { "primary": "rebounds", "secondary": "points", "tertiary": "blocks" },
+        "C": { "primary": "rebounds", "secondary": "blocks", "tertiary": "points" }
+      }
+    },
+    "baseball": {
+      "default_primary": "hits",
+      "default_secondary": "rbi",
+      "default_tertiary": "runs",
+      "default_stats": ["hits", "rbi", "runs", "hr"],
+      "star_threshold": { "stat": "hits", "value": 3 },
+      "by_position": {
+        "SP": { "primary": "k_pitcher", "secondary": "innings_pitched", "tertiary": "wins" },
+        "RP": { "primary": "k_pitcher", "secondary": "innings_pitched", "tertiary": "wins" },
+        "C": { "primary": "hits", "secondary": "rbi", "tertiary": "runs" },
+        "1B": { "primary": "hr", "secondary": "rbi", "tertiary": "hits" },
+        "2B": { "primary": "hits", "secondary": "runs", "tertiary": "rbi" },
+        "3B": { "primary": "hr", "secondary": "rbi", "tertiary": "hits" },
+        "SS": { "primary": "hits", "secondary": "runs", "tertiary": "rbi" },
+        "OF": { "primary": "hits", "secondary": "rbi", "tertiary": "runs" },
+        "DH": { "primary": "hr", "secondary": "rbi", "tertiary": "hits" }
+      }
+    },
+    "football": {
+      "default_primary": "total_yards",
+      "default_secondary": "tds",
+      "default_tertiary": "receptions",
+      "default_stats": ["total_yards", "tds", "receptions", "rushing_yds"],
+      "star_threshold": { "stat": "total_yards", "value": 100 },
+      "by_position": {
+        "QB": { "primary": "passing_yds", "secondary": "passing_tds", "tertiary": "rushing_yds" },
+        "RB": { "primary": "rushing_yds", "secondary": "rushing_tds", "tertiary": "receptions" },
+        "WR": { "primary": "receiving_yds", "secondary": "receiving_tds", "tertiary": "receptions" },
+        "TE": { "primary": "receiving_yds", "secondary": "receiving_tds", "tertiary": "receptions" },
+        "DEF": { "primary": "tackles", "secondary": "sacks", "tertiary": "ints_def" }
+      }
+    },
+    "hockey": {
+      "default_primary": "goals",
+      "default_secondary": "assists",
+      "default_tertiary": "sog",
+      "default_stats": ["goals", "assists", "sog", "blocks"],
+      "star_threshold": { "stat": "goals", "value": 2 },
+      "by_position": {
+        "C": { "primary": "goals", "secondary": "assists", "tertiary": "sog" },
+        "LW": { "primary": "goals", "secondary": "assists", "tertiary": "sog" },
+        "RW": { "primary": "goals", "secondary": "assists", "tertiary": "sog" },
+        "D": { "primary": "assists", "secondary": "blocks", "tertiary": "sog" },
+        "G": { "primary": "saves", "secondary": "plus_minus", "tertiary": "blocks" }
+      }
+    },
+    "soccer": {
+      "default_primary": "goals",
+      "default_secondary": "assists",
+      "default_tertiary": "shots",
+      "default_stats": ["goals", "assists", "shots", "tackles"],
+      "star_threshold": { "stat": "goals", "value": 2 },
+      "by_position": {
+        "FW": { "primary": "goals", "secondary": "shots", "tertiary": "assists" },
+        "MF": { "primary": "assists", "secondary": "goals", "tertiary": "tackles" },
+        "DF": { "primary": "tackles", "secondary": "clean_sheets", "tertiary": "assists" },
+        "GK": { "primary": "saves", "secondary": "clean_sheets", "tertiary": "tackles" }
+      }
+    }
+  }
+}

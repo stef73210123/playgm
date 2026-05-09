@@ -1,0 +1,27 @@
+{
+  "version": "1.0.0",
+  "tiers": [
+    { "level": 1, "name": "Peewee", "pp_threshold": 0, "color": "#94A3B8" },
+    { "level": 2, "name": "Travel", "pp_threshold": 500, "color": "#6EE7B7" },
+    { "level": 3, "name": "JV", "pp_threshold": 1500, "color": "#34D399" },
+    { "level": 4, "name": "Varsity", "pp_threshold": 3000, "color": "#3B82F6" },
+    { "level": 5, "name": "Semi-Pro", "pp_threshold": 5500, "color": "#60A5FA" },
+    { "level": 6, "name": "Pro", "pp_threshold": 9000, "color": "#8B5CF6" },
+    { "level": 7, "name": "Starter", "pp_threshold": 14000, "color": "#A855F7" },
+    { "level": 8, "name": "All-Star", "pp_threshold": 21000, "color": "#EC4899" },
+    { "level": 9, "name": "MVP", "pp_threshold": 30000, "color": "#F97316" },
+    { "level": 10, "name": "Champion", "pp_threshold": 45000, "color": "#EF4444" },
+    { "level": 11, "name": "Hall of Famer", "pp_threshold": 65000, "color": "#F59E0B" },
+    { "level": 12, "name": "Legend", "pp_threshold": 95000, "color": "#FCD34D" },
+    { "level": 13, "name": "GOAT", "pp_threshold": 150000, "color": "#FBBF24" }
+  ],
+  "tier_up_bonus_pp": 500,
+  "contest_gating": {
+    "alliance": 1,
+    "regional_alliance": 6,
+    "regional_external": 8,
+    "themed_external": 8,
+    "national": 9,
+    "championship": 11
+  }
+}

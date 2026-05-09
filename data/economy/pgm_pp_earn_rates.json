@@ -1,0 +1,34 @@
+{
+  "version": "2.0.0",
+  "roster_performance": {
+    "roster_scored_base": 75,
+    "best_of_week_bonus": 150,
+    "h2h_alliance_win": 250,
+    "h2h_alliance_loss": 50,
+    "h2h_alliance_tie": 125,
+    "top_25_pct_bonus": 200,
+    "top_10_pct_bonus": 400,
+    "alliance_first_place_bonus": 300,
+    "alliance_contest_win": 800,
+    "regional_contest_top_10": 1200,
+    "national_contest_top_10": 2500,
+    "tier_up_bonus": 500,
+    "performance_bonus_stack_rule": "highest_only_no_stack"
+  },
+  "daily_engagement": {
+    "daily_login": 25,
+    "playpicks_correct": 15,
+    "playpicks_incorrect_answered": 3,
+    "trivia_easy_correct": 5,
+    "trivia_medium_correct": 10,
+    "trivia_hard_correct": 20,
+    "trivia_5_streak_bonus": 25,
+    "practice_draft_completion": 30
+  },
+  "subscription_daily_boost": {
+    "free": 200,
+    "starter": 500,
+    "playmaker": 1000,
+    "champion": 2000
+  }
+}

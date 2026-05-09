@@ -1,0 +1,119 @@
+{
+  "version": "1.1.0",
+  "by_sport": {
+    "basketball": {
+      "weights": {
+        "points": 1,
+        "rebounds": 1.2,
+        "assists": 1.5,
+        "steals": 2,
+        "blocks": 2,
+        "three_pm": 0.5,
+        "turnovers": -1
+      },
+      "negative_caps": {
+        "turnovers": -10
+      },
+      "games_per_week": 3.5,
+      "per_sport_multiplier": 12.084
+    },
+    "football": {
+      "weights": {
+        "passing_yds": 0.04,
+        "passing_tds": 4,
+        "ints": -2,
+        "rushing_yds": 0.1,
+        "rushing_tds": 6,
+        "receptions": 0.5,
+        "receiving_yds": 0.1,
+        "receiving_tds": 6,
+        "tackles": 1,
+        "sacks": 2
+      },
+      "games_per_week": 1,
+      "per_sport_multiplier": 1.633
+    },
+    "baseball": {
+      "hitter_weights": {
+        "hits": 1,
+        "rbi": 1.5,
+        "runs": 1.5,
+        "hr": 2.5
+      },
+      "pitcher_weights": {
+        "k_pitcher": 1,
+        "wins": 4,
+        "innings_pitched": 0.5,
+        "earned_runs_against": -1
+      },
+      "games_per_week": 6,
+      "per_sport_multiplier": 3.23
+    },
+    "hockey": {
+      "skater_weights": {
+        "goals": 3,
+        "assists": 2,
+        "sog": 0.2,
+        "blocks": 0.5
+      },
+      "goalie_weights": {
+        "saves": 0.4,
+        "wins": 4,
+        "shutouts": 5
+      },
+      "games_per_week": 3.5,
+      "per_sport_multiplier": 1.435
+    },
+    "soccer": {
+      "weights": {
+        "goals": 6,
+        "assists": 3,
+        "shots": 0.3,
+        "tackles": 0.5,
+        "saves": 0.5,
+        "clean_sheets": 4
+      },
+      "games_per_week": 1.5,
+      "per_sport_multiplier": 1
+    }
+  },
+  "global": {
+    "roster_size": 8,
+    "min_picks_per_sport": {
+      "basketball": 0,
+      "football": 0,
+      "baseball": 0,
+      "hockey": 0,
+      "soccer": 0
+    },
+    "synthetic_user_count": 1000,
+    "draft_position_strategy": "snake",
+    "weekly_energy_budget": 8,
+    "card_uplift_by_rarity": {
+      "common": 0.1,
+      "uncommon": 0.2,
+      "rare": 0.35,
+      "epic": 0.6,
+      "legendary": 1
+    },
+    "rarity_caps": {
+      "rare_per_roster": 3,
+      "epic_per_roster": 1,
+      "legendary_per_user_per_week": 1
+    },
+    "subscription_tier_mix": {
+      "free": 0.7,
+      "starter": 0.15,
+      "playmaker": 0.1,
+      "champion": 0.05
+    },
+    "fa_engagement_by_tier": {
+      "free": 0.3,
+      "starter": 0.5,
+      "playmaker": 0.7,
+      "champion": 0.85
+    },
+    "fa_pool_size": 20,
+    "max_bench_size": 3
+  }
+}

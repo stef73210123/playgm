@@ -1,0 +1,254 @@
+{
+  "version": "1.0.0",
+  "notes": [
+    "Channel-shape catalog for the PlayGM marketing surface.",
+    "Targets are placeholders — none of these are in the GDD.",
+    "Every numeric target in this file is flagged 'extrapolated' or 'industry-standard' so Stefan can override before any real spend lands.",
+    "Audience constraints follow PlayGM's audience taxonomy: kid-safe (8+), 13+ (standard paid social), <13 + COPPA-compliant (no personalized ads to under-13s)."
+  ],
+  "channels": [
+    {
+      "channel_id": "meta_paid",
+      "display_name": "Meta (FB + IG paid)",
+      "category": "paid_social",
+      "metric_keys": [
+        "spend_usd",
+        "impressions",
+        "clicks",
+        "ctr_pct",
+        "cpi_usd",
+        "installs",
+        "signups",
+        "roas"
+      ],
+      "audience_constraints": ["13+"],
+      "kpi_focus": "cpi_usd",
+      "targets": {
+        "monthly_spend_usd": 5000,
+        "target_cpi_usd": 1.5,
+        "target_cac_usd": 8.0,
+        "target_roas": 1.2,
+        "target_ctr_pct": 1.5
+      },
+      "target_source": "extrapolated — typical Meta paid-social benchmark for kid-friendly mobile apps"
+    },
+    {
+      "channel_id": "instagram_organic",
+      "display_name": "Instagram (organic + creator)",
+      "category": "organic_social",
+      "metric_keys": [
+        "followers",
+        "posts_30d",
+        "reach_30d",
+        "engagement_rate_pct",
+        "attributed_installs_30d",
+        "creator_collabs"
+      ],
+      "audience_constraints": ["13+"],
+      "kpi_focus": "engagement_rate_pct",
+      "targets": {
+        "monthly_creator_collabs": 4,
+        "engagement_rate_pct": 4.0,
+        "attributed_installs_30d": 500,
+        "monthly_posts": 12
+      },
+      "target_source": "extrapolated — IG creator-led growth benchmark"
+    },
+    {
+      "channel_id": "tiktok_paid",
+      "display_name": "TikTok Ads",
+      "category": "paid_social",
+      "metric_keys": [
+        "spend_usd",
+        "impressions",
+        "clicks",
+        "ctr_pct",
+        "cpi_usd",
+        "installs",
+        "signups",
+        "roas"
+      ],
+      "audience_constraints": ["13+"],
+      "kpi_focus": "cpi_usd",
+      "targets": {
+        "monthly_spend_usd": 3000,
+        "target_cpi_usd": 1.25,
+        "target_cac_usd": 7.0,
+        "target_roas": 1.1,
+        "target_ctr_pct": 1.8
+      },
+      "target_source": "extrapolated — TikTok Ads benchmark for sports/entertainment vertical"
+    },
+    {
+      "channel_id": "tiktok_organic",
+      "display_name": "TikTok (organic + creator)",
+      "category": "organic_social",
+      "metric_keys": [
+        "followers",
+        "video_views_30d",
+        "avg_watch_time_sec",
+        "attributed_installs_30d",
+        "creator_collabs"
+      ],
+      "audience_constraints": ["13+"],
+      "kpi_focus": "video_views_30d",
+      "targets": {
+        "monthly_creator_collabs": 6,
+        "video_views_30d": 250000,
+        "avg_watch_time_sec": 8,
+        "attributed_installs_30d": 800
+      },
+      "target_source": "extrapolated — TikTok creator-led organic benchmark"
+    },
+    {
+      "channel_id": "google_ads",
+      "display_name": "Google Ads (Search + YouTube + Display)",
+      "category": "paid_search_display",
+      "subchannels": ["search", "display", "youtube_in_stream"],
+      "metric_keys": [
+        "spend_usd",
+        "impressions",
+        "clicks",
+        "ctr_pct",
+        "cpi_usd",
+        "installs",
+        "signups",
+        "roas"
+      ],
+      "audience_constraints": ["13+"],
+      "kpi_focus": "cpi_usd",
+      "targets": {
+        "monthly_spend_usd": 6000,
+        "target_cpi_usd": 1.75,
+        "target_cac_usd": 9.0,
+        "target_roas": 1.2,
+        "target_ctr_pct": 2.0
+      },
+      "target_source": "extrapolated — Google App-Install campaign benchmark"
+    },
+    {
+      "channel_id": "youtube_kids",
+      "display_name": "YouTube Kids",
+      "category": "paid_video_kids",
+      "metric_keys": [
+        "spend_usd",
+        "impressions",
+        "completions",
+        "completion_rate_pct",
+        "attributed_signups_30d",
+        "creative_count"
+      ],
+      "audience_constraints": ["<13", "COPPA-compliant", "no_personalized_ads"],
+      "kpi_focus": "completion_rate_pct",
+      "targets": {
+        "monthly_spend_usd": 2000,
+        "completion_rate_pct": 65,
+        "attributed_signups_30d": 150,
+        "creative_count": 4
+      },
+      "target_source": "extrapolated — YouTube Kids (COPPA-compliant) benchmark; deferred attribution due to no personalized tracking on under-13 audience"
+    },
+    {
+      "channel_id": "roblox",
+      "display_name": "Roblox (placements + experiences)",
+      "category": "platform_native",
+      "subchannels": [
+        "display_ads",
+        "immersive_ads",
+        "ugc_items",
+        "sponsored_experiences",
+        "branded_experience"
+      ],
+      "metric_keys": [
+        "spend_usd",
+        "in_experience_visits_30d",
+        "item_sales",
+        "sponsorship_reach",
+        "attributed_app_installs_30d"
+      ],
+      "audience_constraints": ["8+", "kid-safe"],
+      "kpi_focus": "attributed_app_installs_30d",
+      "targets": {
+        "monthly_spend_usd": 3000,
+        "attributed_app_installs_30d": 800,
+        "in_experience_visits_30d": 50000,
+        "item_sales": 1500,
+        "sponsorship_reach": 200000
+      },
+      "target_source": "extrapolated — Roblox-platform funnel; metric shape differs from traditional ad networks (placements + experiences hybrid)"
+    },
+    {
+      "channel_id": "apple_search_ads",
+      "display_name": "Apple Search Ads",
+      "category": "paid_search_app_store",
+      "metric_keys": [
+        "spend_usd",
+        "impressions",
+        "taps",
+        "conversion_rate_pct",
+        "cpi_usd",
+        "installs",
+        "roas"
+      ],
+      "audience_constraints": ["13+"],
+      "kpi_focus": "cpi_usd",
+      "targets": {
+        "monthly_spend_usd": 1500,
+        "target_cpi_usd": 2.0,
+        "target_conversion_rate_pct": 50,
+        "target_roas": 1.3
+      },
+      "target_source": "extrapolated — Apple Search Ads benchmark for kid-friendly games"
+    },
+    {
+      "channel_id": "reddit",
+      "display_name": "Reddit Ads",
+      "category": "paid_social",
+      "metric_keys": [
+        "spend_usd",
+        "impressions",
+        "clicks",
+        "ctr_pct",
+        "cpi_usd",
+        "installs",
+        "signups",
+        "roas"
+      ],
+      "audience_constraints": ["13+"],
+      "kpi_focus": "cpi_usd",
+      "targets": {
+        "monthly_spend_usd": 1000,
+        "target_cpi_usd": 2.5,
+        "target_cac_usd": 12.0,
+        "target_roas": 1.0,
+        "target_ctr_pct": 0.8
+      },
+      "target_source": "industry-standard — Reddit paid-social benchmark"
+    },
+    {
+      "channel_id": "x_twitter",
+      "display_name": "X / Twitter Ads",
+      "category": "paid_social",
+      "metric_keys": [
+        "spend_usd",
+        "impressions",
+        "clicks",
+        "ctr_pct",
+        "cpi_usd",
+        "installs",
+        "signups",
+        "roas"
+      ],
+      "audience_constraints": ["13+"],
+      "kpi_focus": "cpi_usd",
+      "targets": {
+        "monthly_spend_usd": 1000,
+        "target_cpi_usd": 3.0,
+        "target_cac_usd": 14.0,
+        "target_roas": 0.9,
+        "target_ctr_pct": 1.0
+      },
+      "target_source": "industry-standard — X/Twitter paid-social benchmark"
+    }
+  ]
+}

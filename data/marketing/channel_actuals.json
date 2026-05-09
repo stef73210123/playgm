@@ -1,0 +1,192 @@
+{
+  "version": "1.0.0",
+  "last_updated_iso": null,
+  "actuals_by_channel": {
+    "meta_paid": {
+      "current_month": {
+        "spend_usd": 0,
+        "impressions": 0,
+        "clicks": 0,
+        "installs": 0,
+        "signups": 0,
+        "revenue_usd": 0
+      },
+      "last_month": {
+        "spend_usd": 0,
+        "impressions": 0,
+        "clicks": 0,
+        "installs": 0,
+        "signups": 0,
+        "revenue_usd": 0
+      },
+      "last_updated_iso": null
+    },
+    "instagram_organic": {
+      "current_month": {
+        "followers": 0,
+        "posts_30d": 0,
+        "reach_30d": 0,
+        "engagement_rate_pct": 0,
+        "attributed_installs_30d": 0,
+        "creator_collabs": 0
+      },
+      "last_month": {
+        "followers": 0,
+        "posts_30d": 0,
+        "reach_30d": 0,
+        "engagement_rate_pct": 0,
+        "attributed_installs_30d": 0,
+        "creator_collabs": 0
+      },
+      "last_updated_iso": null
+    },
+    "tiktok_paid": {
+      "current_month": {
+        "spend_usd": 0,
+        "impressions": 0,
+        "clicks": 0,
+        "installs": 0,
+        "signups": 0,
+        "revenue_usd": 0
+      },
+      "last_month": {
+        "spend_usd": 0,
+        "impressions": 0,
+        "clicks": 0,
+        "installs": 0,
+        "signups": 0,
+        "revenue_usd": 0
+      },
+      "last_updated_iso": null
+    },
+    "tiktok_organic": {
+      "current_month": {
+        "followers": 0,
+        "video_views_30d": 0,
+        "avg_watch_time_sec": 0,
+        "attributed_installs_30d": 0,
+        "creator_collabs": 0
+      },
+      "last_month": {
+        "followers": 0,
+        "video_views_30d": 0,
+        "avg_watch_time_sec": 0,
+        "attributed_installs_30d": 0,
+        "creator_collabs": 0
+      },
+      "last_updated_iso": null
+    },
+    "google_ads": {
+      "current_month": {
+        "spend_usd": 0,
+        "impressions": 0,
+        "clicks": 0,
+        "installs": 0,
+        "signups": 0,
+        "revenue_usd": 0
+      },
+      "last_month": {
+        "spend_usd": 0,
+        "impressions": 0,
+        "clicks": 0,
+        "installs": 0,
+        "signups": 0,
+        "revenue_usd": 0
+      },
+      "last_updated_iso": null
+    },
+    "youtube_kids": {
+      "current_month": {
+        "spend_usd": 0,
+        "impressions": 0,
+        "completions": 0,
+        "attributed_signups_30d": 0,
+        "creative_count": 0
+      },
+      "last_month": {
+        "spend_usd": 0,
+        "impressions": 0,
+        "completions": 0,
+        "attributed_signups_30d": 0,
+        "creative_count": 0
+      },
+      "last_updated_iso": null
+    },
+    "roblox": {
+      "current_month": {
+        "spend_usd": 0,
+        "in_experience_visits_30d": 0,
+        "item_sales": 0,
+        "sponsorship_reach": 0,
+        "attributed_app_installs_30d": 0
+      },
+      "last_month": {
+        "spend_usd": 0,
+        "in_experience_visits_30d": 0,
+        "item_sales": 0,
+        "sponsorship_reach": 0,
+        "attributed_app_installs_30d": 0
+      },
+      "last_updated_iso": null
+    },
+    "apple_search_ads": {
+      "current_month": {
+        "spend_usd": 0,
+        "impressions": 0,
+        "taps": 0,
+        "installs": 0,
+        "revenue_usd": 0
+      },
+      "last_month": {
+        "spend_usd": 0,
+        "impressions": 0,
+        "taps": 0,
+        "installs": 0,
+        "revenue_usd": 0
+      },
+      "last_updated_iso": null
+    },
+    "reddit": {
+      "current_month": {
+        "spend_usd": 0,
+        "impressions": 0,
+        "clicks": 0,
+        "installs": 0,
+        "signups": 0,
+        "revenue_usd": 0
+      },
+      "last_month": {
+        "spend_usd": 0,
+        "impressions": 0,
+        "clicks": 0,
+        "installs": 0,
+        "signups": 0,
+        "revenue_usd": 0
+      },
+      "last_updated_iso": null
+    },
+    "x_twitter": {
+      "current_month": {
+        "spend_usd": 0,
+        "impressions": 0,
+        "clicks": 0,
+        "installs": 0,
+        "signups": 0,
+        "revenue_usd": 0
+      },
+      "last_month": {
+        "spend_usd": 0,
+        "impressions": 0,
+        "clicks": 0,
+        "installs": 0,
+        "signups": 0,
+        "revenue_usd": 0
+      },
+      "last_updated_iso": null
+    }
+  },
+  "funnel_30d": {
+    "first_roster_locked": 0,
+    "paid_subs": 0
+  }
+}

@@ -1,0 +1,408 @@
+{
+  "version": "3.0.0",
+  "card_templates": [
+    {
+      "template_id": "sb_common_p5",
+      "name": "Steady Hand",
+      "card_type": "stat_boost",
+      "rarity": "common",
+      "energy_cost": 1,
+      "sport": "any",
+      "effect": {
+        "type": "stat_boost",
+        "stat_boosts": [{ "stat": "PRIMARY", "modifier_pct": 0.05, "conditional": false }]
+      },
+      "display": {
+        "description_short": "+5% primary stat",
+        "description_long": "Adds 5% to this player's primary stat for the game.",
+        "scout_callout": "Steady as she goes!"
+      }
+    },
+    {
+      "template_id": "sb_common_dual_3",
+      "name": "All-Around",
+      "card_type": "stat_boost",
+      "rarity": "common",
+      "energy_cost": 1,
+      "sport": "any",
+      "effect": {
+        "type": "stat_boost",
+        "stat_boosts": [
+          { "stat": "PRIMARY", "modifier_pct": 0.03, "conditional": false },
+          { "stat": "SECONDARY", "modifier_pct": 0.03, "conditional": false }
+        ]
+      },
+      "display": {
+        "description_short": "+3% primary, +3% secondary",
+        "description_long": "Small boost to both primary and secondary stats.",
+        "scout_callout": "Doing a little of everything!"
+      }
+    },
+    {
+      "template_id": "sb_uncommon_p10",
+      "name": "Locked In",
+      "card_type": "stat_boost",
+      "rarity": "uncommon",
+      "energy_cost": 1,
+      "sport": "any",
+      "effect": {
+        "type": "stat_boost",
+        "stat_boosts": [{ "stat": "PRIMARY", "modifier_pct": 0.10, "conditional": false }]
+      },
+      "display": {
+        "description_short": "+10% primary stat",
+        "description_long": "This player is locked in. +10% to their primary stat.",
+        "scout_callout": "He's dialed in tonight!"
+      }
+    },
+    {
+      "template_id": "sb_uncommon_dual_5",
+      "name": "Two-Way Threat",
+      "card_type": "stat_boost",
+      "rarity": "uncommon",
+      "energy_cost": 1,
+      "sport": "any",
+      "effect": {
+        "type": "stat_boost",
+        "stat_boosts": [
+          { "stat": "PRIMARY", "modifier_pct": 0.05, "conditional": false },
+          { "stat": "SECONDARY", "modifier_pct": 0.05, "conditional": false }
+        ]
+      },
+      "display": {
+        "description_short": "+5% primary, +5% secondary",
+        "description_long": "Boosts both primary and secondary stats by 5%.",
+        "scout_callout": "Doing it on both ends!"
+      }
+    },
+    {
+      "template_id": "ab_uncommon_win",
+      "name": "Winner's Circle",
+      "card_type": "ability",
+      "rarity": "uncommon",
+      "energy_cost": 1,
+      "sport": "any",
+      "effect": {
+        "type": "ability",
+        "ability": {
+          "trigger_id": "win_bonus",
+          "trigger_params": {},
+          "boost_on_trigger": [{ "stat": "PRIMARY", "modifier_pct": 0.10 }]
+        }
+      },
+      "display": {
+        "description_short": "Team wins: +10% primary",
+        "description_long": "If this player's team wins, +10% to primary stat.",
+        "scout_callout": "Winners win!"
+      }
+    },
+    {
+      "template_id": "sb_rare_p15",
+      "name": "Star Performance",
+      "card_type": "stat_boost",
+      "rarity": "rare",
+      "energy_cost": 2,
+      "sport": "any",
+      "effect": {
+        "type": "stat_boost",
+        "stat_boosts": [{ "stat": "PRIMARY", "modifier_pct": 0.15, "conditional": false }]
+      },
+      "display": {
+        "description_short": "+15% primary stat",
+        "description_long": "Star-level boost. +15% to primary stat for the game.",
+        "scout_callout": "Now THAT'S a performance!"
+      }
+    },
+    {
+      "template_id": "sb_rare_dual_8",
+      "name": "Versatile",
+      "card_type": "stat_boost",
+      "rarity": "rare",
+      "energy_cost": 2,
+      "sport": "any",
+      "effect": {
+        "type": "stat_boost",
+        "stat_boosts": [
+          { "stat": "PRIMARY", "modifier_pct": 0.08, "conditional": false },
+          { "stat": "SECONDARY", "modifier_pct": 0.08, "conditional": false }
+        ]
+      },
+      "display": {
+        "description_short": "+8% primary, +8% secondary",
+        "description_long": "Solid boost to both primary and secondary stats.",
+        "scout_callout": "Stuffing the stat sheet!"
+      }
+    },
+    {
+      "template_id": "ab_rare_big_game",
+      "name": "Big Game",
+      "card_type": "ability",
+      "rarity": "rare",
+      "energy_cost": 2,
+      "sport": "any",
+      "effect": {
+        "type": "ability",
+        "ability": {
+          "trigger_id": "big_game",
+          "trigger_params": { "primary_stat": "PRIMARY" },
+          "boost_on_trigger": [{ "stat": "PRIMARY", "modifier_pct": 0.20 }]
+        }
+      },
+      "display": {
+        "description_short": "Above season avg: +20% primary",
+        "description_long": "If this player exceeds their season average in their primary stat, +20% to that stat.",
+        "scout_callout": "He's having himself a game!"
+      }
+    },
+    {
+      "template_id": "ab_rare_hot_hand",
+      "name": "Hot Hand",
+      "card_type": "ability",
+      "rarity": "rare",
+      "energy_cost": 2,
+      "sport": "any",
+      "effect": {
+        "type": "ability",
+        "ability": {
+          "trigger_id": "hot_hand",
+          "trigger_params": { "primary_stat": "PRIMARY" },
+          "boost_on_trigger": [{ "stat": "PRIMARY", "modifier_pct": 0.20 }]
+        }
+      },
+      "display": {
+        "description_short": "Hot last game: +20% primary",
+        "description_long": "If this player went above their season average last game, +20% to primary stat this game.",
+        "scout_callout": "Riding the hot hand!"
+      }
+    },
+    {
+      "template_id": "ab_rare_rivalry",
+      "name": "Rivalry Mode",
+      "card_type": "ability",
+      "rarity": "rare",
+      "energy_cost": 2,
+      "sport": "any",
+      "effect": {
+        "type": "ability",
+        "ability": {
+          "trigger_id": "rivalry",
+          "trigger_params": { "scope": "division" },
+          "boost_on_trigger": [{ "stat": "ALL", "modifier_pct": 0.20 }]
+        }
+      },
+      "display": {
+        "description_short": "Rival game: +20% all stats",
+        "description_long": "When this player faces a division rival, +20% to all stats.",
+        "scout_callout": "It's a rivalry game — gloves are off!"
+      }
+    },
+    {
+      "template_id": "sb_epic_p20",
+      "name": "Superstar Spotlight",
+      "card_type": "stat_boost",
+      "rarity": "epic",
+      "energy_cost": 3,
+      "sport": "any",
+      "effect": {
+        "type": "stat_boost",
+        "stat_boosts": [{ "stat": "PRIMARY", "modifier_pct": 0.20, "conditional": false }]
+      },
+      "display": {
+        "description_short": "+20% primary stat",
+        "description_long": "Superstar-tier boost. +20% to primary stat for the game.",
+        "scout_callout": "The lights are on!"
+      }
+    },
+    {
+      "template_id": "sb_epic_triple_10",
+      "name": "Three-Tool Talent",
+      "card_type": "stat_boost",
+      "rarity": "epic",
+      "energy_cost": 3,
+      "sport": "any",
+      "effect": {
+        "type": "stat_boost",
+        "stat_boosts": [
+          { "stat": "PRIMARY", "modifier_pct": 0.10, "conditional": false },
+          { "stat": "SECONDARY", "modifier_pct": 0.10, "conditional": false },
+          { "stat": "TERTIARY", "modifier_pct": 0.10, "conditional": false }
+        ]
+      },
+      "display": {
+        "description_short": "+10% to three stats",
+        "description_long": "Boosts three of this player's top stats by 10%.",
+        "scout_callout": "Doing it ALL!"
+      }
+    },
+    {
+      "template_id": "ab_epic_big_game",
+      "name": "Showtime",
+      "card_type": "ability",
+      "rarity": "epic",
+      "energy_cost": 3,
+      "sport": "any",
+      "effect": {
+        "type": "ability",
+        "ability": {
+          "trigger_id": "big_game",
+          "trigger_params": { "primary_stat": "PRIMARY" },
+          "boost_on_trigger": [{ "stat": "ALL", "modifier_pct": 0.20 }]
+        }
+      },
+      "display": {
+        "description_short": "Above avg: +20% all stats",
+        "description_long": "If this player exceeds their season average in their primary stat, +20% to all stats.",
+        "scout_callout": "Showtime, baby!"
+      }
+    },
+    {
+      "template_id": "ab_epic_star_game",
+      "name": "Star Game",
+      "card_type": "ability",
+      "rarity": "epic",
+      "energy_cost": 3,
+      "sport": "any",
+      "effect": {
+        "type": "ability",
+        "ability": {
+          "trigger_id": "star_game",
+          "trigger_params": { "primary_stat": "PRIMARY", "threshold": "SPORT_STAR_THRESHOLD" },
+          "boost_on_trigger": [{ "stat": "PRIMARY", "modifier_pct": 0.30 }]
+        }
+      },
+      "display": {
+        "description_short": "Star game: +30% primary",
+        "description_long": "If this player hits a star-level number in their primary stat, +30% to that stat.",
+        "scout_callout": "STAR GAME ALERT!"
+      }
+    },
+    {
+      "template_id": "ab_epic_stat_stuffer",
+      "name": "Stat Stuffer",
+      "card_type": "ability",
+      "rarity": "epic",
+      "energy_cost": 3,
+      "sport": "any",
+      "effect": {
+        "type": "ability",
+        "ability": {
+          "trigger_id": "stat_stuffer",
+          "trigger_params": { "categories": "SPORT_DEFAULT_STATS", "min_categories": 4 },
+          "boost_on_trigger": [{ "stat": "ALL", "modifier_pct": 0.20 }]
+        }
+      },
+      "display": {
+        "description_short": "4+ stats: +20% all",
+        "description_long": "If this player records non-zero in 4 or more stat categories, +20% to all stats.",
+        "scout_callout": "Filling up that stat sheet!"
+      }
+    },
+    {
+      "template_id": "hy_epic_steady_winner",
+      "name": "Closer's Mentality",
+      "card_type": "hybrid",
+      "rarity": "epic",
+      "energy_cost": 3,
+      "sport": "any",
+      "effect": {
+        "type": "hybrid",
+        "stat_boosts": [{ "stat": "PRIMARY", "modifier_pct": 0.10, "conditional": false }],
+        "ability": {
+          "trigger_id": "win_bonus",
+          "trigger_params": {},
+          "boost_on_trigger": [{ "stat": "PRIMARY", "modifier_pct": 0.20 }]
+        }
+      },
+      "display": {
+        "description_short": "+10% always, +20% on win",
+        "description_long": "+10% to primary stat regardless. If team wins, an additional +20% to primary stat.",
+        "scout_callout": "Built for winning moments!"
+      }
+    },
+    {
+      "template_id": "ab_legendary_showtime",
+      "name": "MVP Mode",
+      "card_type": "ability",
+      "rarity": "legendary",
+      "energy_cost": 4,
+      "sport": "any",
+      "effect": {
+        "type": "ability",
+        "ability": {
+          "trigger_id": "big_game",
+          "trigger_params": { "primary_stat": "PRIMARY" },
+          "boost_on_trigger": [{ "stat": "ALL", "modifier_pct": 0.30 }]
+        }
+      },
+      "display": {
+        "description_short": "Above avg: +30% all stats",
+        "description_long": "If this player exceeds their season average in primary stat, +30% to all stats.",
+        "scout_callout": "MVP MODE ENGAGED!"
+      }
+    },
+    {
+      "template_id": "ab_legendary_star_game",
+      "name": "Hall of Fame Night",
+      "card_type": "ability",
+      "rarity": "legendary",
+      "energy_cost": 4,
+      "sport": "any",
+      "effect": {
+        "type": "ability",
+        "ability": {
+          "trigger_id": "star_game",
+          "trigger_params": { "primary_stat": "PRIMARY", "threshold": "SPORT_STAR_THRESHOLD" },
+          "boost_on_trigger": [{ "stat": "ALL", "modifier_pct": 0.40 }]
+        }
+      },
+      "display": {
+        "description_short": "Star game: +40% all stats",
+        "description_long": "If this player hits a star-level number in their primary stat, +40% to all stats.",
+        "scout_callout": "ONE FOR THE HIGHLIGHT REEL!"
+      }
+    },
+    {
+      "template_id": "ab_legendary_stat_stuffer",
+      "name": "Triple-Threat",
+      "card_type": "ability",
+      "rarity": "legendary",
+      "energy_cost": 4,
+      "sport": "any",
+      "effect": {
+        "type": "ability",
+        "ability": {
+          "trigger_id": "stat_stuffer",
+          "trigger_params": { "categories": "SPORT_DEFAULT_STATS", "min_categories": 4 },
+          "boost_on_trigger": [{ "stat": "ALL", "modifier_pct": 0.30 }]
+        }
+      },
+      "display": {
+        "description_short": "4+ stats: +30% all",
+        "description_long": "If this player records non-zero in 4 or more stat categories, +30% to all stats.",
+        "scout_callout": "DOING IT ALL TONIGHT!"
+      }
+    },
+    {
+      "template_id": "hy_legendary_anchor",
+      "name": "Franchise Anchor",
+      "card_type": "hybrid",
+      "rarity": "legendary",
+      "energy_cost": 4,
+      "sport": "any",
+      "effect": {
+        "type": "hybrid",
+        "stat_boosts": [{ "stat": "PRIMARY", "modifier_pct": 0.12, "conditional": false }],
+        "ability": {
+          "trigger_id": "big_game",
+          "trigger_params": { "primary_stat": "PRIMARY" },
+          "boost_on_trigger": [{ "stat": "ALL", "modifier_pct": 0.25 }]
+        }
+      },
+      "display": {
+        "description_short": "+12% always, +25% all on big game",
+        "description_long": "+12% to primary stat. If player exceeds season average in primary stat, an additional +25% to all stats.",
+        "scout_callout": "The franchise — ALWAYS shows up!"
+      }
+    }
+  ]
+}

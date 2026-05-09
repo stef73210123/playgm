@@ -1,0 +1,36 @@
+{
+  "version": "v1",
+  "last_updated_iso": "2026-05-03T00:00:00.000Z",
+  "sports": {
+    "nfl": {
+      "enabled": true,
+      "label": "Football",
+      "league": "NFL",
+      "disabled_reason": ""
+    },
+    "nba": {
+      "enabled": true,
+      "label": "Basketball",
+      "league": "NBA",
+      "disabled_reason": ""
+    },
+    "mlb": {
+      "enabled": true,
+      "label": "Baseball",
+      "league": "MLB",
+      "disabled_reason": ""
+    },
+    "nhl": {
+      "enabled": true,
+      "label": "Hockey",
+      "league": "NHL",
+      "disabled_reason": ""
+    },
+    "mls": {
+      "enabled": false,
+      "label": "Soccer",
+      "league": "MLS",
+      "disabled_reason": "Awaiting data source"
+    }
+  }
+}

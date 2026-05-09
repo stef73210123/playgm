@@ -1,0 +1,26 @@
+{
+  "version": "1.0.0",
+  "_doc": "Map a player's PlayGM overall_grade to the rarity tier of the PlayGM scout card granted by /cards/scan. Per the IP policy doc, the physical card's rarity is irrelevant — only the player's PlayGM grade decides. Lower grades fall back to common with a 'needs more games' badge so we never grant a barren card. Mirrors the Rarity enum in cardScanLLM.ts.",
+
+  "grade_to_rarity": {
+    "A+": "legendary",
+    "A":  "legendary",
+    "A-": "epic",
+    "B+": "epic",
+    "B":  "rare",
+    "B-": "rare",
+    "C+": "rare",
+    "C":  "common",
+    "C-": "common",
+    "D+": "common",
+    "D":  "common",
+    "D-": "common",
+    "F":  "common"
+  },
+
+  "_low_grade_badge_doc": "When the granted rarity is 'common' AND the player's grade is at or below C+, attach the 'needs_more_games' badge so the kid sees that the player's PlayGM book just hasn't seen enough games yet.",
+  "needs_more_games_threshold_grade": "C+",
+
+  "_already_owned_doc": "When the user already owns a scout card for this player, the route falls through to Option B from card-scan-ip-policy.md: polite deny + 50 PP refresh consolation.",
+  "already_owned_pp_refresh": 50
+}

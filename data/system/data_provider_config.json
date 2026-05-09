@@ -1,0 +1,12 @@
+{
+  "version": "v1",
+  "last_updated_iso": "2026-05-08T00:00:00.000Z",
+  "notes": "Per-sport stats provider routing. NBA migrated to API-Sports (Pro plan, 7500/day) on 2026-05-08 — verified end-to-end against the 2025-26 season. NFL/MLB/NHL adapters not yet wired in apisportsAdapter.ts (they throw 'not yet wired'); leave those on espn until ported. Valid providers: espn, thesportsdb, apisports.",
+  "providers": {
+    "nfl": "espn",
+    "nba": "apisports",
+    "mlb": "espn",
+    "nhl": "espn",
+    "mls": "espn"
+  }
+}

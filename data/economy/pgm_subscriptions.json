@@ -1,0 +1,111 @@
+{
+  "version": "2.1.0",
+  "tiers": [
+    {
+      "tier_id": "free",
+      "name": "Free",
+      "monthly_price_usd": 0,
+      "rosters_per_week": 1,
+      "practice_drafts_per_day": 1,
+      "cap_mode": false,
+      "draft_modes": [
+        "snake"
+      ],
+      "fa_pool_size_per_week": 10,
+      "draft_position_control": "none",
+      "family_max_profiles": 1,
+      "monthly_pack_allocation": [],
+      "card_inventory_cap": 100,
+      "daily_pp_boost": 200,
+      "ask_scout_daily_cap": 2,
+      "card_scan_daily_cap": 2,
+      "trade_cap_per_day": 1,
+      "notes": ""
+    },
+    {
+      "tier_id": "starter",
+      "name": "Starter",
+      "monthly_price_usd": 2.99,
+      "rosters_per_week": 3,
+      "practice_drafts_per_day": 1,
+      "cap_mode": true,
+      "draft_modes": [
+        "snake",
+        "cap"
+      ],
+      "fa_pool_size_per_week": 20,
+      "draft_position_control": "random",
+      "family_max_profiles": 1,
+      "monthly_pack_allocation": [
+        {
+          "pack_id": "pro_pack",
+          "count": 1
+        }
+      ],
+      "card_inventory_cap": 200,
+      "daily_pp_boost": 500,
+      "ask_scout_daily_cap": 5,
+      "card_scan_daily_cap": 5,
+      "trade_cap_per_day": 3,
+      "notes": ""
+    },
+    {
+      "tier_id": "playmaker",
+      "name": "Playmaker",
+      "monthly_price_usd": 5.99,
+      "rosters_per_week": 4,
+      "practice_drafts_per_day": 3,
+      "cap_mode": true,
+      "draft_modes": [
+        "snake",
+        "cap"
+      ],
+      "fa_pool_size_per_week": 30,
+      "draft_position_control": "preferred_slot",
+      "family_max_profiles": 1,
+      "monthly_pack_allocation": [
+        {
+          "pack_id": "pro_pack",
+          "count": 3
+        }
+      ],
+      "card_inventory_cap": 400,
+      "daily_pp_boost": 1000,
+      "ask_scout_daily_cap": 10,
+      "card_scan_daily_cap": 10,
+      "trade_cap_per_day": 6,
+      "notes": ""
+    },
+    {
+      "tier_id": "champion",
+      "name": "Champion",
+      "monthly_price_usd": 9.99,
+      "rosters_per_week": 15,
+      "practice_drafts_per_day": -1,
+      "cap_mode": true,
+      "draft_modes": [
+        "snake",
+        "cap"
+      ],
+      "fa_pool_size_per_week": 40,
+      "draft_position_control": "exact_slot",
+      "family_max_profiles": 1,
+      "monthly_pack_allocation": [
+        {
+          "pack_id": "all_star_pack",
+          "count": 1
+        },
+        {
+          "pack_id": "pro_pack",
+          "count": 2
+        }
+      ],
+      "card_inventory_cap": -1,
+      "daily_pp_boost": 2000,
+      "ask_scout_daily_cap": 20,
+      "card_scan_daily_cap": 20,
+      "trade_cap_per_day": -1,
+      "notes": ""
+    }
+  ]
+}

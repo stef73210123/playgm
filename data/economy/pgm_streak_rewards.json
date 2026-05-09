@@ -1,0 +1,60 @@
+{
+  "version": "1.0.0",
+  "streak_rewards": [
+    {
+      "day": 1,
+      "pack_id": "rookie_pack",
+      "bonus_pp": 10,
+      "bonus_tokens": 0
+    },
+    {
+      "day": 3,
+      "pack_id": "rookie_pack",
+      "bonus_pp": 25,
+      "bonus_tokens": 0
+    },
+    {
+      "day": 5,
+      "pack_id": "pro_pack",
+      "bonus_pp": 50,
+      "bonus_tokens": 0
+    },
+    {
+      "day": 7,
+      "pack_id": "pro_pack",
+      "bonus_pp": 100,
+      "bonus_tokens": 0
+    },
+    {
+      "day": 14,
+      "pack_id": "all_star_pack",
+      "bonus_pp": 200,
+      "bonus_tokens": 0
+    },
+    {
+      "day": 21,
+      "pack_id": "all_star_pack",
+      "bonus_pp": 400,
+      "bonus_tokens": 1
+    },
+    {
+      "day": 30,
+      "pack_id": "mvp_pack",
+      "bonus_pp": 400,
+      "bonus_tokens": 0
+    }
+  ],
+  "post_30_recurrence": {
+    "interval_days": 30,
+    "pack_id": "mvp_pack"
+  },
+  "subscription_streak_boost": {
+    "champion": "upgrade_one_pack_tier_on_every_streak_reward",
+    "playmaker": "upgrade_one_pack_tier_on_days_7_14_21_30"
+  },
+  "streak_save": {
+    "cost_usd": 0.99,
+    "cost_gems": 99,
+    "monthly_limit": 1
+  }
+}

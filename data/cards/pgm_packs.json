@@ -1,0 +1,56 @@
+{
+  "version": "3.0.0",
+  "packs": [
+    {
+      "pack_id": "rookie_pack",
+      "name": "Rookie Pack",
+      "pp_cost": 400,
+      "card_count": 3,
+      "drop_rates": { "common": 0.75, "uncommon": 0.22, "rare": 0.03, "epic": 0.00, "legendary": 0.00 },
+      "guaranteed_slots": [],
+      "sport_diversity_min": 1,
+      "bonus_token_chance": 0.00
+    },
+    {
+      "pack_id": "pro_pack",
+      "name": "Pro Pack",
+      "pp_cost": 1000,
+      "card_count": 5,
+      "drop_rates": { "common": 0.50, "uncommon": 0.32, "rare": 0.15, "epic": 0.03, "legendary": 0.00 },
+      "guaranteed_slots": [],
+      "sport_diversity_min": 2,
+      "bonus_token_chance": 0.05
+    },
+    {
+      "pack_id": "all_star_pack",
+      "name": "All-Star Pack",
+      "pp_cost": 2500,
+      "card_count": 6,
+      "drop_rates": { "common": 0.30, "uncommon": 0.35, "rare": 0.25, "epic": 0.08, "legendary": 0.02 },
+      "guaranteed_slots": [{ "slot_index": 5, "minimum_rarity": "rare" }],
+      "sport_diversity_min": 2,
+      "bonus_token_chance": 0.15
+    },
+    {
+      "pack_id": "mvp_pack",
+      "name": "MVP Pack",
+      "pp_cost": 6000,
+      "card_count": 8,
+      "drop_rates": { "common": 0.15, "uncommon": 0.25, "rare": 0.30, "epic": 0.22, "legendary": 0.08 },
+      "guaranteed_slots": [{ "slot_index": 7, "minimum_rarity": "epic" }],
+      "sport_diversity_min": 3,
+      "bonus_token_chance": 0.30
+    },
+    {
+      "pack_id": "goat_pack",
+      "name": "GOAT Pack",
+      "pp_cost": null,
+      "card_count": 8,
+      "drop_rates": { "common": 0.05, "uncommon": 0.15, "rare": 0.30, "epic": 0.35, "legendary": 0.15 },
+      "guaranteed_slots": [{ "slot_index": 7, "minimum_rarity": "legendary" }],
+      "sport_diversity_min": 3,
+      "bonus_token_chance": 1.00,
+      "obtainable_via": "contest_reward"
+    }
+  ]
+}

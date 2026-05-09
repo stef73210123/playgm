@@ -1,0 +1,63 @@
+{
+  "version": "1.1.0",
+  "_doc": "Trade rules for the PlayGM kid-fantasy trade engine. Authoritative source for the fairness check, per-tier trade caps, and post-execution roster lock. The numerical grade ladder mirrors server/src/services/ratings/computeRatings.ts → GRADE_SCORE so a server change to the ladder requires a matching change here. PP-to-grade conversion converts PlayPoint sweeteners into a comparable scalar so a small PP top-up nudges the fairness scale without letting cash-rich kids buy lopsided trades.\nv1.1.0 changes: caps switched from per-season to per-day (UTC-resetting) — see caps.by_tier.*.trades_per_day.",
+  "fairness": {
+    "max_imbalance_pct": 15,
+    "_imbalance_pct_doc": "Max allowed (|sideA - sideB| / max(sideA, sideB)) before the proposal is auto-rejected. 15% gives the engine breathing room for plausible value-add trades (e.g. 2 B+ for 1 A-) while killing obviously lopsided offers.",
+    "grade_score": {
+      "A+": 13,
+      "A": 12,
+      "A-": 11,
+      "B+": 10,
+      "B": 9,
+      "B-": 8,
+      "C+": 7,
+      "C": 6,
+      "C-": 5,
+      "D+": 4,
+      "D": 3,
+      "D-": 2,
+      "F": 1
+    },
+    "pp_per_grade_point": 200,
+    "_pp_doc": "200 PP == 1.0 grade-score points. So 100 PP == 0.5 grade points (matches the spec). Capped at max_pp_per_side so a kid with 100k PP can't bulldoze fairness with cash.",
+    "max_pp_per_side": 2000,
+    "_max_pp_doc": "Hard ceiling on PP sweetener per side. 2000 PP == 10 grade-score points == one grade tier shift, which is plenty of nudge for a fairness adjustment without enabling pure-PP trades.",
+    "min_players_per_side": 1,
+    "max_players_per_side": 4,
+    "require_equal_player_counts": true,
+    "_equal_counts_doc": "When true, both sides of a trade must include the same number of players (1v1, 2v2, 3v3, 4v4). Asymmetric trades (e.g. 2 for 3) are rejected client + server side."
+  },
+  "execution": {
+    "lock_duration_hours": 24,
+    "_lock_doc": "After a trade executes, both rosters are locked from outbound trade proposals for 24h. Prevents arbitrage flipping (trade A→B, B→A loop)."
+  },
+  "caps": {
+    "_doc": "Daily trade caps per tier. Counts a user's executed-trade rows for the current UTC day (00:00:00Z → 23:59:59Z window) and rejects new proposals once the cap is reached. -1 == unlimited. Resets at UTC midnight.",
+    "reset_window": "utc_day",
+    "by_tier": {
+      "free": {
+        "trades_per_day": 1
+      },
+      "starter": {
+        "trades_per_day": 3
+      },
+      "playmaker": {
+        "trades_per_day": 6
+      },
+      "champion": {
+        "trades_per_day": -1
+      }
+    }
+  },
+  "age_safety": {
+    "under_13_friend_list_only": true,
+    "_doc": "COPPA-aware: under-13 users can only trade with kids on their friend list. 13+ can trade with any opponent in the same league."
+  },
+  "expiry": {
+    "proposal_ttl_hours": 72,
+    "_ttl_doc": "Pending proposals expire 72h after creation if neither side accepts/rejects. Keeps the trades inbox from accumulating stale offers."
+  },
+  "cooldown_hours_between_trade_proposals_with_same_user": 6,
+  "_cooldown_doc": "After a proposal between two users (regardless of outcome), wait this many hours before another proposal between the same pair is allowed. 0 disables the cooldown."
+}

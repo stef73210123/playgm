@@ -1,0 +1,186 @@
+{
+  "version": "1.0.0",
+  "_doc": "Hand-curated list of all-time great players keyed by team id (matches src/data/mockTeams.ts ids). Each entry has name, position, peak years (string range), and a single signature stat. Used by ScoutingReportModal in the team-report variant when the kid toggles to 'All-Time Greats'. Teams not yet seeded show a friendly 'coming soon' placeholder.",
+  "_seeded_team_count": 25,
+  "teams": {
+    "celtics": [
+      { "name": "Bill Russell", "position": "C", "peakYears": "1957–1969", "signatureStat": "11× NBA champion" },
+      { "name": "Larry Bird", "position": "SF", "peakYears": "1980–1988", "signatureStat": "3× MVP, 24.3 PPG career" },
+      { "name": "John Havlicek", "position": "SF", "peakYears": "1962–1978", "signatureStat": "26,395 career points" },
+      { "name": "Kevin Garnett", "position": "PF", "peakYears": "2007–2012", "signatureStat": "2008 Defensive POY" },
+      { "name": "Paul Pierce", "position": "SF", "peakYears": "2001–2008", "signatureStat": "2008 Finals MVP" },
+      { "name": "Bob Cousy", "position": "PG", "peakYears": "1953–1963", "signatureStat": "8× assist leader" }
+    ],
+    "lakers": [
+      { "name": "Magic Johnson", "position": "PG", "peakYears": "1980–1991", "signatureStat": "3× MVP, 5× champion" },
+      { "name": "Kareem Abdul-Jabbar", "position": "C", "peakYears": "1971–1985", "signatureStat": "All-time scoring leader (until 2023)" },
+      { "name": "Kobe Bryant", "position": "SG", "peakYears": "2000–2010", "signatureStat": "5× champion, 81-point game" },
+      { "name": "Shaquille O'Neal", "position": "C", "peakYears": "1996–2004", "signatureStat": "3-peat (2000–2002)" },
+      { "name": "Jerry West", "position": "SG", "peakYears": "1962–1972", "signatureStat": "The Logo · 27.0 PPG career" },
+      { "name": "LeBron James", "position": "SF", "peakYears": "2018–2020", "signatureStat": "2020 champion + Finals MVP" }
+    ],
+    "bulls": [
+      { "name": "Michael Jordan", "position": "SG", "peakYears": "1991–1998", "signatureStat": "6-0 in Finals, 6× Finals MVP" },
+      { "name": "Scottie Pippen", "position": "SF", "peakYears": "1991–1998", "signatureStat": "6× champion, 7× All-Star" },
+      { "name": "Dennis Rodman", "position": "PF", "peakYears": "1995–1998", "signatureStat": "7× rebounding leader" },
+      { "name": "Derrick Rose", "position": "PG", "peakYears": "2010–2012", "signatureStat": "Youngest MVP ever (2011)" },
+      { "name": "Horace Grant", "position": "PF", "peakYears": "1991–1993", "signatureStat": "3-peat starter" }
+    ],
+    "spurs": [
+      { "name": "Tim Duncan", "position": "PF", "peakYears": "1999–2014", "signatureStat": "5× champion, 2× MVP" },
+      { "name": "David Robinson", "position": "C", "peakYears": "1990–1996", "signatureStat": "1995 MVP, 71-point game" },
+      { "name": "Tony Parker", "position": "PG", "peakYears": "2007–2014", "signatureStat": "2007 Finals MVP" },
+      { "name": "Manu Ginóbili", "position": "SG", "peakYears": "2005–2013", "signatureStat": "4× champion off the bench" },
+      { "name": "Kawhi Leonard", "position": "SF", "peakYears": "2014–2017", "signatureStat": "2014 Finals MVP" }
+    ],
+    "warriors": [
+      { "name": "Stephen Curry", "position": "PG", "peakYears": "2015–2022", "signatureStat": "4× champion, all-time 3PT leader" },
+      { "name": "Klay Thompson", "position": "SG", "peakYears": "2015–2019", "signatureStat": "4× champion, 37-pt quarter" },
+      { "name": "Draymond Green", "position": "PF", "peakYears": "2015–2018", "signatureStat": "2017 Defensive POY" },
+      { "name": "Wilt Chamberlain", "position": "C", "peakYears": "1959–1965", "signatureStat": "100-point game · 50.4 PPG season" },
+      { "name": "Rick Barry", "position": "SF", "peakYears": "1975", "signatureStat": "1975 Finals MVP" }
+    ],
+    "patriots": [
+      { "name": "Tom Brady", "position": "QB", "peakYears": "2001–2018", "signatureStat": "6 Super Bowl wins as Patriot" },
+      { "name": "Rob Gronkowski", "position": "TE", "peakYears": "2011–2017", "signatureStat": "92 receiving TDs as Patriot" },
+      { "name": "Randy Moss", "position": "WR", "peakYears": "2007", "signatureStat": "23 TDs in 2007 (record)" },
+      { "name": "Tedy Bruschi", "position": "LB", "peakYears": "2001–2007", "signatureStat": "3× Super Bowl champion" },
+      { "name": "Ty Law", "position": "CB", "peakYears": "1995–2004", "signatureStat": "36 INTs as Patriot" }
+    ],
+    "steelers": [
+      { "name": "Joe Greene", "position": "DT", "peakYears": "1972–1979", "signatureStat": "4× Super Bowl champion, Defensive POY" },
+      { "name": "Terry Bradshaw", "position": "QB", "peakYears": "1974–1979", "signatureStat": "4× Super Bowl champion" },
+      { "name": "Jack Lambert", "position": "LB", "peakYears": "1974–1981", "signatureStat": "1976 Defensive POY" },
+      { "name": "Franco Harris", "position": "RB", "peakYears": "1972–1979", "signatureStat": "Immaculate Reception · 12,120 yds" },
+      { "name": "Troy Polamalu", "position": "S", "peakYears": "2005–2010", "signatureStat": "2010 Defensive POY" },
+      { "name": "Hines Ward", "position": "WR", "peakYears": "2002–2009", "signatureStat": "1,000 career receptions" }
+    ],
+    "cowboys": [
+      { "name": "Emmitt Smith", "position": "RB", "peakYears": "1991–1998", "signatureStat": "All-time rushing leader (18,355 yds)" },
+      { "name": "Troy Aikman", "position": "QB", "peakYears": "1991–1996", "signatureStat": "3× Super Bowl champion" },
+      { "name": "Roger Staubach", "position": "QB", "peakYears": "1971–1979", "signatureStat": "2× Super Bowl champion, '71 SB MVP" },
+      { "name": "Michael Irvin", "position": "WR", "peakYears": "1991–1995", "signatureStat": "11,904 receiving yards" },
+      { "name": "DeMarcus Ware", "position": "DE", "peakYears": "2008–2012", "signatureStat": "117 sacks as Cowboy" }
+    ],
+    "packers": [
+      { "name": "Brett Favre", "position": "QB", "peakYears": "1995–2007", "signatureStat": "3× MVP, Super Bowl XXXI" },
+      { "name": "Aaron Rodgers", "position": "QB", "peakYears": "2011–2021", "signatureStat": "4× MVP, Super Bowl XLV" },
+      { "name": "Reggie White", "position": "DE", "peakYears": "1993–1998", "signatureStat": "68.5 sacks as Packer" },
+      { "name": "Bart Starr", "position": "QB", "peakYears": "1962–1967", "signatureStat": "5× champion, SB I & II MVP" },
+      { "name": "Donald Driver", "position": "WR", "peakYears": "2002–2009", "signatureStat": "10,137 career yards" }
+    ],
+    "niners": [
+      { "name": "Jerry Rice", "position": "WR", "peakYears": "1985–2000", "signatureStat": "All-time receiving leader (22,895 yds)" },
+      { "name": "Joe Montana", "position": "QB", "peakYears": "1981–1989", "signatureStat": "4× Super Bowl champion (perfect)" },
+      { "name": "Steve Young", "position": "QB", "peakYears": "1991–1998", "signatureStat": "2× MVP, SB XXIX MVP" },
+      { "name": "Ronnie Lott", "position": "S", "peakYears": "1981–1990", "signatureStat": "4× Super Bowl champion" },
+      { "name": "Patrick Willis", "position": "LB", "peakYears": "2007–2012", "signatureStat": "5× All-Pro" }
+    ],
+    "yankees": [
+      { "name": "Babe Ruth", "position": "RF", "peakYears": "1920–1934", "signatureStat": "714 career HR · 7× champion" },
+      { "name": "Lou Gehrig", "position": "1B", "peakYears": "1925–1938", "signatureStat": ".340 career AVG · 2,130 consecutive games" },
+      { "name": "Mickey Mantle", "position": "CF", "peakYears": "1955–1962", "signatureStat": "1956 Triple Crown" },
+      { "name": "Joe DiMaggio", "position": "CF", "peakYears": "1936–1951", "signatureStat": "56-game hit streak" },
+      { "name": "Derek Jeter", "position": "SS", "peakYears": "1996–2009", "signatureStat": "5× champion · 3,465 hits" },
+      { "name": "Mariano Rivera", "position": "RP", "peakYears": "1996–2013", "signatureStat": "All-time saves leader (652)" }
+    ],
+    "dodgers": [
+      { "name": "Sandy Koufax", "position": "SP", "peakYears": "1961–1966", "signatureStat": "3× Cy Young, 4 no-hitters" },
+      { "name": "Jackie Robinson", "position": "2B", "peakYears": "1947–1956", "signatureStat": "Broke MLB color barrier" },
+      { "name": "Clayton Kershaw", "position": "SP", "peakYears": "2011–2017", "signatureStat": "3× Cy Young, 2014 MVP" },
+      { "name": "Don Drysdale", "position": "SP", "peakYears": "1962–1965", "signatureStat": "1962 Cy Young" },
+      { "name": "Pee Wee Reese", "position": "SS", "peakYears": "1949–1955", "signatureStat": "10× All-Star" }
+    ],
+    "stlcardinals": [
+      { "name": "Stan Musial", "position": "OF", "peakYears": "1943–1957", "signatureStat": "3× MVP, 3,630 hits" },
+      { "name": "Bob Gibson", "position": "SP", "peakYears": "1968–1970", "signatureStat": "1.12 ERA in 1968" },
+      { "name": "Albert Pujols", "position": "1B", "peakYears": "2003–2010", "signatureStat": "3× MVP as Cardinal" },
+      { "name": "Yadier Molina", "position": "C", "peakYears": "2010–2018", "signatureStat": "9× Gold Glove" },
+      { "name": "Ozzie Smith", "position": "SS", "peakYears": "1985–1992", "signatureStat": "13× Gold Glove · The Wizard" }
+    ],
+    "redsox": [
+      { "name": "Ted Williams", "position": "LF", "peakYears": "1941–1957", "signatureStat": ".406 in 1941 · last to hit .400" },
+      { "name": "David Ortiz", "position": "DH", "peakYears": "2004–2013", "signatureStat": "3× champion, 2013 WS MVP" },
+      { "name": "Pedro Martínez", "position": "SP", "peakYears": "1999–2003", "signatureStat": "1.74 ERA in 2000" },
+      { "name": "Carl Yastrzemski", "position": "LF", "peakYears": "1967–1970", "signatureStat": "1967 Triple Crown + MVP" },
+      { "name": "Manny Ramírez", "position": "LF", "peakYears": "2002–2007", "signatureStat": "2× champion, 2004 ALCS MVP" }
+    ],
+    "sfgiants": [
+      { "name": "Willie Mays", "position": "CF", "peakYears": "1954–1965", "signatureStat": "660 career HR · 12× Gold Glove" },
+      { "name": "Barry Bonds", "position": "LF", "peakYears": "2001–2004", "signatureStat": "73 HR in 2001 · 7× MVP" },
+      { "name": "Buster Posey", "position": "C", "peakYears": "2010–2014", "signatureStat": "3× champion, 2012 MVP" },
+      { "name": "Madison Bumgarner", "position": "SP", "peakYears": "2014", "signatureStat": "2014 WS MVP — 0.43 ERA" },
+      { "name": "Juan Marichal", "position": "SP", "peakYears": "1963–1969", "signatureStat": "243 career wins · 9× All-Star" }
+    ],
+    "canadiens": [
+      { "name": "Maurice Richard", "position": "RW", "peakYears": "1944–1957", "signatureStat": "First to 50 goals in 50 games" },
+      { "name": "Jean Béliveau", "position": "C", "peakYears": "1955–1971", "signatureStat": "10× Stanley Cup champion" },
+      { "name": "Guy Lafleur", "position": "RW", "peakYears": "1974–1980", "signatureStat": "5× champion, 2× MVP" },
+      { "name": "Patrick Roy", "position": "G", "peakYears": "1986–1993", "signatureStat": "2× champion, 2× Conn Smythe" },
+      { "name": "Henri Richard", "position": "C", "peakYears": "1956–1973", "signatureStat": "11× Stanley Cup champion (record)" }
+    ],
+    "leafs": [
+      { "name": "Dave Keon", "position": "C", "peakYears": "1962–1967", "signatureStat": "4× champion, 1967 Conn Smythe" },
+      { "name": "Mats Sundin", "position": "C", "peakYears": "1996–2008", "signatureStat": "Franchise leader · 420 goals" },
+      { "name": "Borje Salming", "position": "D", "peakYears": "1973–1980", "signatureStat": "First Swede in HHOF" },
+      { "name": "Tim Horton", "position": "D", "peakYears": "1959–1967", "signatureStat": "4× Stanley Cup champion" },
+      { "name": "Doug Gilmour", "position": "C", "peakYears": "1992–1994", "signatureStat": "127-pt season (1992–93)" }
+    ],
+    "redwings": [
+      { "name": "Gordie Howe", "position": "RW", "peakYears": "1950–1963", "signatureStat": "Mr. Hockey · 4× champion" },
+      { "name": "Steve Yzerman", "position": "C", "peakYears": "1988–2002", "signatureStat": "3× champion, 1998 Conn Smythe" },
+      { "name": "Nicklas Lidström", "position": "D", "peakYears": "1997–2008", "signatureStat": "7× Norris, 4× champion" },
+      { "name": "Sergei Fedorov", "position": "C", "peakYears": "1993–1996", "signatureStat": "1994 Hart + Selke" },
+      { "name": "Pavel Datsyuk", "position": "C", "peakYears": "2007–2010", "signatureStat": "4× Selke, 3× Lady Byng" }
+    ],
+    "bruins": [
+      { "name": "Bobby Orr", "position": "D", "peakYears": "1968–1975", "signatureStat": "8× Norris, 3× Hart" },
+      { "name": "Ray Bourque", "position": "D", "peakYears": "1980–1996", "signatureStat": "5× Norris as Bruin" },
+      { "name": "Phil Esposito", "position": "C", "peakYears": "1969–1975", "signatureStat": "76 goals in 1970–71" },
+      { "name": "Patrice Bergeron", "position": "C", "peakYears": "2010–2018", "signatureStat": "6× Selke (record)" },
+      { "name": "Cam Neely", "position": "RW", "peakYears": "1989–1994", "signatureStat": "50 goals in 49 games (1993–94)" }
+    ],
+    "nyrrangers": [
+      { "name": "Mark Messier", "position": "C", "peakYears": "1994", "signatureStat": "1994 champion · captain's guarantee" },
+      { "name": "Mike Richter", "position": "G", "peakYears": "1993–1996", "signatureStat": "1994 Stanley Cup MVP-caliber" },
+      { "name": "Brian Leetch", "position": "D", "peakYears": "1991–1996", "signatureStat": "1994 Conn Smythe (1st US-born)" },
+      { "name": "Henrik Lundqvist", "position": "G", "peakYears": "2005–2014", "signatureStat": "459 wins as Ranger (record)" },
+      { "name": "Rod Gilbert", "position": "RW", "peakYears": "1971–1975", "signatureStat": "406 goals as Ranger" }
+    ],
+    "galaxy": [
+      { "name": "Landon Donovan", "position": "FW", "peakYears": "2005–2012", "signatureStat": "6× MLS Cup champion (USMNT all-time)" },
+      { "name": "David Beckham", "position": "MF", "peakYears": "2007–2012", "signatureStat": "2× MLS Cup champion" },
+      { "name": "Robbie Keane", "position": "FW", "peakYears": "2011–2014", "signatureStat": "2014 MLS MVP" },
+      { "name": "Cobi Jones", "position": "MF", "peakYears": "1996–2004", "signatureStat": "Galaxy career appearances leader" },
+      { "name": "Carlos Ruiz", "position": "FW", "peakYears": "2002", "signatureStat": "2002 MLS MVP" }
+    ],
+    "nyrb": [
+      { "name": "Thierry Henry", "position": "FW", "peakYears": "2010–2014", "signatureStat": "51 MLS goals, 2012 Best XI" },
+      { "name": "Bradley Wright-Phillips", "position": "FW", "peakYears": "2013–2017", "signatureStat": "2× Golden Boot winner" },
+      { "name": "Tim Cahill", "position": "MF", "peakYears": "2012–2014", "signatureStat": "16 MLS goals + iconic header" },
+      { "name": "Tab Ramos", "position": "MF", "peakYears": "1996–2002", "signatureStat": "Original MetroStars captain" },
+      { "name": "Sacha Kljestan", "position": "MF", "peakYears": "2015–2017", "signatureStat": "Single-season assist record (20)" }
+    ],
+    "seattlesounders": [
+      { "name": "Clint Dempsey", "position": "FW", "peakYears": "2013–2017", "signatureStat": "47 MLS goals, 2015 Sounders MVP" },
+      { "name": "Nicolás Lodeiro", "position": "MF", "peakYears": "2016–2020", "signatureStat": "2× MLS Cup champion" },
+      { "name": "Stefan Frei", "position": "GK", "peakYears": "2016–2019", "signatureStat": "2016 MLS Cup MVP" },
+      { "name": "Osvaldo Alonso", "position": "MF", "peakYears": "2010–2015", "signatureStat": "Sounders all-time appearances" },
+      { "name": "Raúl Ruidíaz", "position": "FW", "peakYears": "2018–2022", "signatureStat": "70+ MLS goals, 2× All-Star" }
+    ],
+    "columbuscrew": [
+      { "name": "Guillermo Barros Schelotto", "position": "MF", "peakYears": "2007–2008", "signatureStat": "2008 MLS MVP + Cup MVP" },
+      { "name": "Frankie Hejduk", "position": "DF", "peakYears": "2003–2009", "signatureStat": "2008 MLS Cup champion" },
+      { "name": "Brian McBride", "position": "FW", "peakYears": "1996–2003", "signatureStat": "62 Crew goals" },
+      { "name": "Lucas Zelarayán", "position": "MF", "peakYears": "2020", "signatureStat": "2020 MLS Cup MVP (3 G/A)" },
+      { "name": "Federico Higuaín", "position": "MF", "peakYears": "2012–2018", "signatureStat": "Crew career assists leader" }
+    ],
+    "atlanta": [
+      { "name": "Josef Martínez", "position": "FW", "peakYears": "2017–2019", "signatureStat": "2018 MLS MVP, Cup MVP, 31-goal season" },
+      { "name": "Miguel Almirón", "position": "MF", "peakYears": "2017–2018", "signatureStat": "2× All-Star, 25 goals/assists '18" },
+      { "name": "Brad Guzan", "position": "GK", "peakYears": "2017–2020", "signatureStat": "2018 MLS Cup champion" },
+      { "name": "Tito Villalba", "position": "FW", "peakYears": "2017–2018", "signatureStat": "2018 MLS Cup champion" },
+      { "name": "Thiago Almada", "position": "MF", "peakYears": "2022–2023", "signatureStat": "2022 Newcomer of the Year" }
+    ]
+  }
+}

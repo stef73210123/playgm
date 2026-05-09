@@ -1,0 +1,48 @@
+{
+  "version": "4.0.0",
+  "model": "finite_use_three_pips_no_recharge",
+  "comment": "Finite-use scout cards. Each scout card starts with scout_card_max_pips (3) pips and decrements by 1 on each deploy (a deploy = applying the scout card to a player on the roster). When pips hit 0 the scout card is RETIRED — permanently exhausted, no recharge ever. To deploy the same scout card again the kid must own another copy (each copy carries its own 3 pips, so owning N copies = 3N total deploys). Energy is now a pure sink mechanic: scan or earn scout cards to maintain a deck. Stefan 2026-05-03 (FINAL — replaces both v2 single-pip and v3 three-pip-with-recharge models).",
+  "scout_card_max_pips": 3,
+  "auto_recharge": false,
+  "manual_recharge_items": [],
+  "ui": {
+    "ready_label": "Ready",
+    "retired_label": "Exhausted",
+    "retired_help": "This scout card is exhausted — scan or earn another to deploy again.",
+    "pip_format": "●●● / ●●○ / ●○○ / EXHAUSTED"
+  },
+  "deprecated_fields": {
+    "card_max_pips": null,
+    "card_full_recharge_hours": null,
+    "card_full_recharge_ms": null,
+    "recharge_hours": null,
+    "recharge_ms": null,
+    "max_pips": null,
+    "comment": "All time-based recharge knobs removed under v4. The unprefixed card_max_pips key was renamed to scout_card_max_pips to match Stefan's terminology (the collectibles are SCOUT cards, not player cards)."
+  },
+  "deprecated_models": [
+    {
+      "version": "1.0.0",
+      "model": "three_pip_per_use_48h_cooldown",
+      "comment": "Original ship: 3 pips, 48h cooldown between every deploy, manual recharge item required when all pips spent."
+    },
+    {
+      "version": "2.0.0",
+      "model": "single_pip_24h_auto_recharge",
+      "comment": "Brief intermediate (2026-05-03 morning): 1 pip per scout card with 24h auto-recharge. Replaced same day."
+    },
+    {
+      "version": "3.0.0",
+      "model": "three_pip_24h_full_reset",
+      "comment": "Brief intermediate (2026-05-03 midday): 3 pips with a single 24h full-reset only after all pips spent. Replaced same day after Stefan clarified the intent was finite-use, no recharge ever."
+    }
+  ],
+  "roster_build_energy_budget": {
+    "deprecated": true,
+    "comment": "The 8-Energy/week roster-build budget (sum of energy_cost across scout cards in a roster) is removed. Pips are the only stamina/scarcity model — energy_cost on scout card templates is retained for back-compat but no longer validated at roster lock."
+  },
+  "duplicates": {
+    "stacking_rule": "per_copy_pips",
+    "comment": "Each owned copy of a scout card carries its own pips_remaining. Two copies of the same scout card = two independent counters of 3 pips each = 6 total deploys of that scout card. The collection screen renders each copy as its own tile (or a stacked tile with a quantity badge — see CollectionScreen)."
+  }
+}
