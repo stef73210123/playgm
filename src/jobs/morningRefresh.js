@@ -12,6 +12,8 @@
  */
 
 require('dotenv').config();
+const fs   = require('fs');
+const path = require('path');
 const { lookupPlayer, lastTeamEvents } = require('../api/sportsdb');
 const {
   getAllPlayers, upsertPlayer,
@@ -19,6 +21,8 @@ const {
   diffSnapshots,
   startRefreshLog, finishRefreshLog,
 } = require('../models/player');
+
+const DIFFS_DIR = path.resolve(process.env.DIFFS_DIR || './diffs');
 
 // Pause between API calls to respect free-tier rate limit (~1 req/s)
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -147,15 +151,27 @@ async function run() {
     }
   }
 
-  finishRefreshLog(logId, {
-    total:   players.length,
-    updated,
-    failed,
-    diffSummary,
-  });
+  const counts = { total: players.length, updated, failed };
+
+  finishRefreshLog(logId, { ...counts, diffSummary });
 
   console.log(`\n=== Done — ${updated} updated, ${failed} failed ===\n`);
+  writeDiffFile(diffSummary, counts);
   printDiffReport(diffSummary);
+}
+
+function writeDiffFile(diffSummary, { total, updated, failed }) {
+  fs.mkdirSync(DIFFS_DIR, { recursive: true });
+  const date     = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
+  const filePath = path.join(DIFFS_DIR, `${date}.json`);
+  const payload  = {
+    date,
+    generated_at: new Date().toISOString(),
+    summary: { total, updated, failed },
+    changes: diffSummary,
+  };
+  fs.writeFileSync(filePath, JSON.stringify(payload, null, 2));
+  console.log(`Diff file written → ${filePath}`);
 }
 
 function printDiffReport(diffSummary) {
