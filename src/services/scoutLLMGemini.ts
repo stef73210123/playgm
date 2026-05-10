@@ -38,6 +38,7 @@ import {
   type Part,
 } from '@google/generative-ai';
 import { findPlayerByNameAsync } from './ratings/cacheLookup.js';
+import { supabase } from '../db/client.js';
 import type { League } from './stats/types.js';
 
 // ─── Model & client ──────────────────────────────────────────────────────────
@@ -113,6 +114,17 @@ ABSOLUTE RULES — never break these:
 
 TOOLS YOU CAN USE:
 - \`lookup_player_stats(player_name, league?)\` — get a player's current season stats from PlayGM's local cache. MANDATORY for any player/team/stat question (see rule 8). Returns either a structured stat object or \`not_found: true\` (see rule 9). Pass \`league\` ('nba'|'nfl'|'mlb'|'nhl'|'mls') when the question makes the sport unambiguous, to disambiguate cross-sport name collisions.
+- \`find_top_players(league, season, stat, limit?)\` — find the top N players in a league/season by a single stat. MANDATORY for aggregate / leaderboard questions where no specific player is named: "scoring title leader", "MVP candidate", "top scorer", "best ERA", "leading rusher", "home run leader", etc. Returns a ranked array of \`{name, team, value}\`. Stat keys per league:
+    • NBA: points_per_game, rebounds_per_game, assists_per_game, steals_per_game, blocks_per_game, three_pm_per_game.
+    • NFL: passYards, passTDs, rushYards, rushTDs, recYards, recTDs, ints, sacks.
+    • MLB: home_runs, batting_avg, era, strikeouts, wins, rbi, hits.
+    • NHL: goals, assists, points, saves, wins, goals_against_avg.
+    • MLS: goals, assists, shots, clean_sheets.
+  Examples:
+    - "Who's leading the scoring title?" → find_top_players(league:'nba', season:'2025-26', stat:'points_per_game', limit:5)
+    - "Who's the MVP candidate?" → find_top_players for the relevant league + stat (NBA points_per_game, NFL passYards, MLB home_runs, NHL points).
+    - "Top rusher this year?" → find_top_players(league:'nfl', season:'2025', stat:'rushYards', limit:5)
+  Default season labels: NBA 2025-26, NFL 2025, MLB 2026, NHL 2025-26, MLS 2026.
   (Built-in Google Search is currently disabled — see migration doc.)
 
 VOICE:
@@ -168,6 +180,7 @@ export function getScoutLLMStats() {
     noKeyFallbackCount,
     webSearchUseCount,
     statLookupUseCount,
+    topPlayersUseCount,
     safetyBlockCount,
     model: GEMINI_MODEL,
     provider: 'gemini' as const,
@@ -264,6 +277,104 @@ async function handleLookupPlayerStats(args: LookupArgs): Promise<Record<string,
   return formatStatsForLLM(hit.player, hit.league, seasonLabel);
 }
 
+// ─── find_top_players tool (aggregate leaderboard queries) ──────────────────
+//
+// Added OTA #8 (2026-05-10) — closes the gap where Scout had no way to
+// answer "scoring leader" / "MVP candidate" / "top rusher" style
+// questions. Previously the model had no tool to call for these, so it
+// would either hallucinate or deflect with a "can't reach my notebook"
+// answer. The handler queries Supabase `player_stats` directly using the
+// jsonb `stats_json` column the existing lookup_player_stats path
+// already reads from.
+
+let topPlayersUseCount = 0;
+
+interface FindTopPlayersArgs {
+  league?: string;
+  season?: string;
+  stat?: string;
+  limit?: number;
+}
+
+interface TopPlayerRow {
+  name: string;
+  team: string;
+  value: number;
+}
+
+async function handleFindTopPlayers(args: FindTopPlayersArgs): Promise<Record<string, unknown>> {
+  topPlayersUseCount++;
+  const league = (args.league ?? '').toLowerCase().trim();
+  const season = (args.season ?? '').trim();
+  const stat = (args.stat ?? '').trim();
+  const limit = Math.max(1, Math.min(10, Number.isFinite(args.limit) ? Number(args.limit) : 5));
+  if (!league || !season || !stat) {
+    return { error: 'find_top_players requires league, season, and stat' };
+  }
+  // Pull a generous slice of rows for the league/season and sort in JS.
+  // We can't ORDER BY a jsonb subscript portably without a generated
+  // column or PostgREST RPC, and Supabase REST doesn't expose CAST in
+  // its ORDER BY syntax. For NBA (~500 rows) / NFL (~1500) this is a
+  // trivial filter+sort.
+  try {
+    const { data, error } = await supabase
+      .from('player_stats')
+      .select('full_name, team, team_abbr, stats_json')
+      .eq('sport', league)
+      .eq('season', season)
+      .limit(2000);
+    if (error) {
+      return { error: `supabase query failed: ${error.message}` };
+    }
+    if (!data || data.length === 0) {
+      return {
+        not_found: true,
+        message:
+          `No player_stats rows for league=${league} season=${season}. ` +
+          `Per Scout system rule 9, tell the kid honestly that you don't have ` +
+          `current leaderboard data and offer to scout a specific player instead.`,
+      };
+    }
+    const rows: TopPlayerRow[] = [];
+    for (const r of data as Array<{
+      full_name: string | null;
+      team: string | null;
+      team_abbr: string | null;
+      stats_json: Record<string, unknown> | null;
+    }>) {
+      const raw = r.stats_json?.[stat];
+      const num = typeof raw === 'number' ? raw : typeof raw === 'string' ? Number(raw) : NaN;
+      if (!Number.isFinite(num)) continue;
+      rows.push({
+        name: r.full_name ?? '(unknown)',
+        team: r.team_abbr ?? r.team ?? '',
+        value: Math.round(num * 10) / 10,
+      });
+    }
+    if (rows.length === 0) {
+      return {
+        not_found: true,
+        message:
+          `Stat key "${stat}" is not populated on any ${league} ${season} row. ` +
+          `Per Scout system rule 9, tell the kid you don't have that leaderboard ` +
+          `and offer to scout a specific player instead.`,
+      };
+    }
+    // ERA and goals_against_avg sort ascending (lower = better); everything
+    // else sorts descending.
+    const ascending = stat === 'era' || stat === 'goals_against_avg';
+    rows.sort((a, b) => (ascending ? a.value - b.value : b.value - a.value));
+    return {
+      league: league.toUpperCase(),
+      season,
+      stat,
+      players: rows.slice(0, limit),
+    };
+  } catch (e) {
+    return { error: `find_top_players threw: ${(e as Error).message}` };
+  }
+}
+
 // ─── Tool declarations ───────────────────────────────────────────────────────
 
 const lookupPlayerStatsDecl = {
@@ -289,6 +400,46 @@ const lookupPlayerStatsDecl = {
   },
 } as const;
 
+const findTopPlayersDecl = {
+  name: 'find_top_players',
+  description:
+    'Find the top N players by a stat in a given league/season. Use for aggregate / ' +
+    'leaderboard questions like "scoring title", "MVP candidate", "top scorer", ' +
+    '"best ERA", "leading rusher", "home run leader" where no specific player name ' +
+    'is given. Returns a ranked array of {name, team, value}. Lower-is-better stats ' +
+    '(ERA, goals_against_avg) sort ascending; everything else sorts descending.',
+  parameters: {
+    type: SchemaType.OBJECT,
+    properties: {
+      league: {
+        type: SchemaType.STRING,
+        description: 'League key.',
+        enum: ['nba', 'nfl', 'mlb', 'nhl', 'mls'],
+      },
+      season: {
+        type: SchemaType.STRING,
+        description:
+          'Season label. NBA/NHL/MLS use "2025-26"; NFL uses "2025"; MLB uses "2026".',
+      },
+      stat: {
+        type: SchemaType.STRING,
+        description:
+          'Stat key in stats_json. NBA: points_per_game, rebounds_per_game, ' +
+          'assists_per_game, steals_per_game, blocks_per_game, three_pm_per_game. ' +
+          'NFL: passYards, passTDs, rushYards, rushTDs, recYards, recTDs, ints, sacks. ' +
+          'MLB: home_runs, batting_avg, era, strikeouts, wins, rbi, hits. ' +
+          'NHL: goals, assists, points, saves, wins, goals_against_avg. ' +
+          'MLS: goals, assists, shots, clean_sheets.',
+      },
+      limit: {
+        type: SchemaType.INTEGER,
+        description: 'How many top players to return. Default 5, max 10.',
+      },
+    },
+    required: ['league', 'season', 'stat'],
+  },
+} as const;
+
 // ─── Lazy model factory ──────────────────────────────────────────────────────
 
 function getAskModel(): GenerativeModel | null {
@@ -302,7 +453,7 @@ function getAskModel(): GenerativeModel | null {
   // `{ googleSearch: {} }`, and Google's REST endpoint accepts both
   // names. If the typed tool catches up, we can drop the cast.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const tools: any[] = [{ functionDeclarations: [lookupPlayerStatsDecl] }];
+  const tools: any[] = [{ functionDeclarations: [lookupPlayerStatsDecl, findTopPlayersDecl] }];
   if (ENABLE_GOOGLE_SEARCH_GROUNDING) {
     tools.push({ googleSearch: {} });
   }
@@ -401,6 +552,15 @@ export async function askScoutLLM(
             functionResponse: {
               name: call.name,
               response: await handleLookupPlayerStats(args),
+            },
+          };
+        }
+        if (call.name === 'find_top_players') {
+          const args = (call.args ?? {}) as FindTopPlayersArgs;
+          return {
+            functionResponse: {
+              name: call.name,
+              response: await handleFindTopPlayers(args),
             },
           };
         }
