@@ -41,6 +41,7 @@ import { syncRoutes } from './routes/sync.js';
 import { tradeRoutes } from './routes/trade.js';
 import { startStatsRefreshJobs } from './jobs/refreshStats.js';
 import { startHighlightsCron } from './jobs/highlightsCron.js';
+import { startMorningPlayerRefresh } from './jobs/morningPlayerRefresh.js';
 import { installAdminAuth } from './middleware/adminAuth.js';
 import { getActiveScoutProvider, getScoutLLMStats } from './services/scoutLLM.js';
 
@@ -155,6 +156,7 @@ try {
   startLiveScoreSync();           // 120-s live score poll (War Room)
   startStatsRefreshJobs(server.log); // Per-league ESPN refresh (daily 04:00 ET + hourly in-season)
   startHighlightsCron(server.log);   // Daily 05:30 ET — team + player highlight refresh
+  startMorningPlayerRefresh(server.log); // Daily 07:00 ET — TheSportsDB stats + results refresh with diff
   startScheduleRefreshJobs(server.log); // Every 6 hours — refresh weekly schedule cache from ESPN
 
   // Daily 5am ET highlight cache refresh (America/New_York handles DST automatically)
