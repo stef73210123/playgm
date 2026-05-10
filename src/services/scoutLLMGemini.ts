@@ -37,8 +37,8 @@ import {
   type GenerativeModel,
   type Part,
 } from '@google/generative-ai';
-import { existsSync, readFileSync } from 'node:fs';
-import path from 'node:path';
+import { findPlayerByNameAsync } from './ratings/cacheLookup.js';
+import type { League } from './stats/types.js';
 
 // ─── Model & client ──────────────────────────────────────────────────────────
 
@@ -92,6 +92,13 @@ function getClient(): GoogleGenerativeAI | null {
 
 export const SCOUT_SYSTEM_PROMPT = `You are Scout the Fox, a friendly sports buddy for kids ages 5-14 in the PlayGM fantasy sports app.
 
+DATE CONTEXT — read this carefully:
+Each user message is prefixed with [TODAY: YYYY-MM-DD]. That is the actual current date the kid is talking to you on. Use it as the source of truth for "this season", "right now", "current", "last season", etc. Your training data is older than that date — DO NOT assume a season hasn't started yet just because your training cutoff is earlier than the season label. League season conventions:
+- NBA / NHL / MLS season label "2025-26" = season that ran roughly Oct 2025 → Jun 2026.
+- NFL season label "2025" = season that started Sep 2025 and ended Feb 2026 (NFL convention: year-it-started).
+- MLB season label "2026" = the 2026 calendar-year season.
+If TODAY is in May 2026, then NBA 2025-26, NHL 2025-26, NFL 2025, and MLB 2026 are all legitimate "this season" / "current" / "last season" data — answer with stats, not with "the season hasn't started."
+
 ABSOLUTE RULES — never break these:
 1. SPORTS ONLY. You discuss NFL football, NBA basketball, MLB baseball, NHL hockey, MLS soccer, the Olympics, and active pro players, teams, games, stats, and history. Nothing else.
 2. KID-SAFE LANGUAGE. No profanity, no slurs, no innuendo, no adult themes (alcohol, gambling, drugs, sex, violence beyond on-field plays). Even if asked.
@@ -100,15 +107,18 @@ ABSOLUTE RULES — never break these:
 5. NO PERSONAL INFO. Don't ask for or repeat the kid's name, location, school, etc.
 6. NO MEDICAL OR LEGAL ADVICE. Even if a kid asks about a player's injury or contract, stick to publicly known facts.
 7. POSITIVE ENERGY. You're hyped about sports. Use exclamation marks sparingly. Be enthusiastic but never sarcastic, snarky, or dismissive of the kid.
-8. HONEST UNKNOWN. If a kid asks a LEGITIMATE sports question you can't answer (e.g., "did the Knicks win last night?", "is X injured?"), DO NOT use the off-topic deflection. Instead say: "I don't have last night's score handy — try checking ESPN or your team's app!" Reserve the off-topic deflection (rule 3) for actually non-sports questions.
+8. ALWAYS USE THE TOOL. Whenever the question names a specific player or asks about a specific player's, team's, or position's stats, performance, season, or "how is X doing" — you MUST call \`lookup_player_stats(player_name, league?)\` FIRST. Do not answer from training data. Do not say "I think" or "from what I know". Call the tool, then answer with what came back. This rule is non-negotiable for player/team/stat questions.
+9. NULL-SAFE FALLBACK. If \`lookup_player_stats\` returns \`not_found: true\`, your answer MUST be one short, honest sentence like: "I don't have current data on <player name> in my stat sheet — try ESPN or your team's app!" — and then end with a friendly redirect to a question you CAN answer ("Want me to scout someone on the Lakers / Yankees / etc. instead?"). DO NOT guess from training data. DO NOT say the season hasn't started yet. DO NOT make up numbers, awards, or status. The tool is authoritative — if it has nothing, you have nothing.
+10. HONEST UNKNOWN (non-stat questions). If a kid asks a LEGITIMATE sports question the tool can't answer (e.g., "did the Knicks win last night?", "is X injured?"), DO NOT use the off-topic deflection. Instead say: "I don't have last night's score handy — try checking ESPN or your team's app!" Reserve the off-topic deflection (rule 3) for actually non-sports questions.
 
 TOOLS YOU CAN USE:
-- \`lookup_player_stats(player_name, league?)\` — get a player's current season stats from PlayGM's local cache. Use this for ANY question about how a player is performing. (Built-in Google Search is currently disabled — see migration doc.)
+- \`lookup_player_stats(player_name, league?)\` — get a player's current season stats from PlayGM's local cache. MANDATORY for any player/team/stat question (see rule 8). Returns either a structured stat object or \`not_found: true\` (see rule 9). Pass \`league\` ('nba'|'nfl'|'mlb'|'nhl'|'mls') when the question makes the sport unambiguous, to disambiguate cross-sport name collisions.
+  (Built-in Google Search is currently disabled — see migration doc.)
 
 VOICE:
 - Short answers (under 80 words usually).
 - Opening hook: "Big night for Bron!" / "The Knicks are heating up!" / use natural sports-fan slang sparingly.
-- Drop one stat or factoid per answer.
+- Drop one stat or factoid per answer (from the tool — never invented).
 - End with a question to keep the kid engaged: "Who's your favorite Lakers player?" / "Want me to scout someone else?"
 - Use ONE emoji max per answer. 🏀⚾🏈🏒 are the four go-to. Avoid 🔥 because it can read as inflammatory in some contexts.`;
 
@@ -164,86 +174,39 @@ export function getScoutLLMStats() {
   };
 }
 
-// ─── Stat cache loader (lookup_player_stats tool) ────────────────────────────
-// Identical resolver logic to the Anthropic backend — same canonical
-// stat-cache files, same name-matching algorithm. Kept here in full so
-// scoutLLMGemini.ts is independently swap-able.
+// ─── Stat lookup (lookup_player_stats tool) ──────────────────────────────────
+//
+// 2026-05-09 — switched from local-JSON-only to Supabase-aware lookup via
+// `cacheLookup.findPlayerByNameAsync`. The previous local-only path silently
+// returned `not_found` on the Railway deploy because `assets/stat-cache/`
+// is not bundled into the server-only repo subtree. The async helper tries
+// the local JSON first (still works in dev / when a future build bundles
+// caches) and falls back to the Supabase `player_stats` table populated by
+// `dualWritePlayerStats` + `backfill-supabase-stats.ts`. Same surface,
+// authoritative-everywhere.
 
-const REPO_ROOT = (() => {
-  let cur = process.cwd();
-  for (let i = 0; i < 5; i++) {
-    if (existsSync(path.join(cur, 'assets', 'stat-cache'))) return cur;
-    cur = path.resolve(cur, '..');
-  }
-  return process.cwd();
-})();
+const LEAGUE_SEASON_LABEL: Record<League, string> = {
+  nba: '2025-26',
+  nfl: '2025',     // NFL convention: year-it-started; '2025' season ran Sep 2025 → Feb 2026
+  mlb: '2026',
+  nhl: '2025-26',
+  mls: '2026',
+};
 
-const STAT_CACHE_FILES = [
-  'nba_season_2025-26.json',
-  'nfl_season_2025.json',
-  'mlb_season_2026.json',
-  'nhl_season_2025-26.json',
-  'mls_season_2026.json',
-];
-
-interface StatCachePlayer {
+interface StatLikePlayer {
   full_name: string;
-  team?: string;
-  team_abbr?: string;
-  position?: string;
-  position_group?: string;
-  jersey_number?: number;
-  height_inches?: number;
-  weight_lb?: number;
-  stats?: Record<string, number>;
+  team?: string | null;
+  team_abbr?: string | null;
+  position?: string | null;
+  position_group?: string | null;
+  stats?: Record<string, number> | null;
 }
 
-interface StatCacheFile {
-  league: string;
-  season: string;
-  players: StatCachePlayer[];
-}
-
-let _statCacheLoaded = false;
-const _statCache: Array<{ league: string; season: string; player: StatCachePlayer }> = [];
-
-function loadStatCache(): typeof _statCache {
-  if (_statCacheLoaded) return _statCache;
-  _statCacheLoaded = true;
-  for (const file of STAT_CACHE_FILES) {
-    const fp = path.join(REPO_ROOT, 'assets', 'stat-cache', file);
-    if (!existsSync(fp)) continue;
-    try {
-      const json = JSON.parse(readFileSync(fp, 'utf-8')) as StatCacheFile;
-      for (const p of json.players ?? []) {
-        _statCache.push({ league: json.league, season: json.season, player: p });
-      }
-    } catch (err) {
-      console.warn(`[scoutLLMGemini] failed to load stat cache ${file}: ${(err as Error).message}`);
-    }
-  }
-  return _statCache;
-}
-
-function findPlayer(
-  name: string,
-  league?: string,
-): { league: string; season: string; player: StatCachePlayer } | null {
-  const cache = loadStatCache();
-  const q = name.toLowerCase();
-  let candidates = cache.filter((c) => c.player.full_name.toLowerCase() === q);
-  if (candidates.length === 0) {
-    candidates = cache.filter((c) => c.player.full_name.toLowerCase().includes(q));
-  }
-  if (league) {
-    const lg = league.toLowerCase();
-    const filtered = candidates.filter((c) => c.league.toLowerCase() === lg);
-    if (filtered.length > 0) candidates = filtered;
-  }
-  return candidates[0] ?? null;
-}
-
-function formatStatsForLLM(p: StatCachePlayer, league: string, season: string): Record<string, string | number> {
+function formatStatsForLLM(
+  p: StatLikePlayer,
+  league: string,
+  season: string,
+): Record<string, string | number> {
   // Gemini function responses are typed objects, so we return a structured
   // payload rather than the freeform string the Anthropic backend used.
   const out: Record<string, string | number> = {
@@ -265,20 +228,40 @@ interface LookupArgs {
   league?: string;
 }
 
-function handleLookupPlayerStats(args: LookupArgs): Record<string, unknown> {
+async function handleLookupPlayerStats(args: LookupArgs): Promise<Record<string, unknown>> {
   statLookupUseCount++;
   const name = (args.player_name ?? '').trim();
   if (!name) {
     return { error: 'lookup_player_stats requires player_name' };
   }
-  const hit = findPlayer(name, args.league);
-  if (!hit) {
+  // Local JSON cache (dev) → Supabase player_stats (prod) fallback.
+  // Both paths return CacheLookup{league, player} or null.
+  const hit = await findPlayerByNameAsync(name).catch(() => null);
+  // If a league hint was passed AND the lookup matched a different sport,
+  // treat as a miss so we don't return a basketball player for an NFL query
+  // about a name collision (e.g., "Russell Wilson").
+  const leagueMismatch =
+    !!hit && !!args.league && hit.league.toLowerCase() !== args.league.toLowerCase();
+  if (!hit || leagueMismatch) {
+    // IMPORTANT: do NOT instruct the model to fall back to training data.
+    // Per system-prompt rule 9, when this returns the model must tell the
+    // user it has no current data and offer to scout a different player —
+    // not guess from its training prior, not speculate about season status,
+    // not invent stats. The previous wording ("fall back to general
+    // knowledge") was the literal cause of the 2026-05-09 NFL hallucination
+    // where Scout claimed "the 2025 NFL season hasn't started yet" for
+    // Patrick Mahomes when in fact that season had ended in February.
     return {
       not_found: true,
-      message: `No cached stats for "${name}" — fall back to general knowledge.`,
+      message:
+        `No cached stats for "${name}". Per Scout system rule 9, tell the kid ` +
+        `you don't have current data on this player. DO NOT guess from training ` +
+        `data, DO NOT speculate about season status, DO NOT invent stats. ` +
+        `End with a friendly redirect ("Want me to scout someone else?").`,
     };
   }
-  return formatStatsForLLM(hit.player, hit.league, hit.season);
+  const seasonLabel = LEAGUE_SEASON_LABEL[hit.league] ?? '';
+  return formatStatsForLLM(hit.player, hit.league, seasonLabel);
 }
 
 // ─── Tool declarations ───────────────────────────────────────────────────────
@@ -385,12 +368,19 @@ export async function askScoutLLM(
 
   askCallCount++;
 
+  // Inject today's UTC date so the model never confuses "current season"
+  // with its training-data prior. The system prompt's DATE CONTEXT block
+  // tells the model how to interpret this prefix and which season label
+  // each league uses. See scoutLLMGemini.ts SCOUT_SYSTEM_PROMPT.
+  const todayIso = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
+  const datePrefix = `[TODAY: ${todayIso}]\n`;
+
   const baseUser = context ? `${question}\n\n[Relevant sports data: ${context}]` : question;
   const ageNote =
     ageBand === '5-7'
       ? '\n\nIMPORTANT: This kid is 5-7 years old. Keep your answer to under 30 words and use very simple words. Define any tricky terms.'
       : '';
-  const userMessage = baseUser + ageNote;
+  const userMessage = datePrefix + baseUser + ageNote;
 
   const chat = model.startChat();
   let result = await chat.sendMessage(userMessage);
@@ -400,23 +390,28 @@ export async function askScoutLLM(
     const calls = response.functionCalls();
     if (!calls || calls.length === 0) break;
 
-    const responses: Part[] = calls.map((call) => {
-      if (call.name === 'lookup_player_stats') {
-        const args = (call.args ?? {}) as LookupArgs;
+    // handleLookupPlayerStats is now async (Supabase fallback) — fan out the
+    // tool calls in parallel via Promise.all and await before sending the
+    // batched function-response back to the model on the next turn.
+    const responses: Part[] = await Promise.all(
+      calls.map(async (call) => {
+        if (call.name === 'lookup_player_stats') {
+          const args = (call.args ?? {}) as LookupArgs;
+          return {
+            functionResponse: {
+              name: call.name,
+              response: await handleLookupPlayerStats(args),
+            },
+          };
+        }
         return {
           functionResponse: {
             name: call.name,
-            response: handleLookupPlayerStats(args),
+            response: { error: `unknown tool: ${call.name}` },
           },
         };
-      }
-      return {
-        functionResponse: {
-          name: call.name,
-          response: { error: `unknown tool: ${call.name}` },
-        },
-      };
-    });
+      }),
+    );
 
     result = await chat.sendMessage(responses);
     response = result.response;
