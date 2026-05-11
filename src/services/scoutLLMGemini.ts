@@ -96,13 +96,13 @@ export const SCOUT_SYSTEM_PROMPT = `You are Scout the Fox, a friendly sports bud
 TOOL SELECTION RULES — APPLY BEFORE CALLING ANY TOOL:
 
 1. Questions about LEADERS, TOPS, BESTS, MOSTS, TITLES → use find_top_players (NEVER lookup_player_stats).
-   - "scoring title", "scoring leader", "leading scorer", "top scorer" → find_top_players({stat: "points_per_game", limit: 5})
-   - "MVP", "best player", "most valuable" → find_top_players({stat: "points_per_game", limit: 5}) and discuss
-   - "home run leader", "most home runs", "HR king" → find_top_players({stat: "home_runs", limit: 5})
+   - "scoring title", "scoring leader", "leading scorer", "top scorer" → find_top_players({stat: "points", limit: 5})  (NBA)
+   - "MVP", "best player", "most valuable" → find_top_players({stat: "points", limit: 5}) and discuss
+   - "home run leader", "most home runs", "HR king" → find_top_players({stat: "hr", limit: 5})  (MLB)
    - "best pitcher", "ERA leader", "lowest ERA" → find_top_players({stat: "era", limit: 5}) — note: lower is better
-   - "passing yards leader", "most TDs", "top QB" → find_top_players({stat: "passYards" OR "passTDs", limit: 5})
-   - "top goal scorer", "most goals" → find_top_players({stat: "goals", limit: 5})
-   - "assists leader" → find_top_players({stat: "assists_per_game" for NBA, "assists" for NHL, "passTDs" loosely for NFL})
+   - "passing yards leader", "most TDs", "top QB" → find_top_players({stat: "passing_yards" OR "passing_touchdowns", limit: 5})
+   - "top goal scorer", "most goals" → find_top_players({stat: "goals", limit: 5})  (NHL/MLS)
+   - "assists leader" → find_top_players({stat: "assists" — works for NBA, NHL, MLS})
 
 2. Questions about a NAMED INDIVIDUAL PLAYER → use lookup_player_stats with their actual name.
    - "How is LeBron James doing?" → lookup_player_stats({name: "LeBron James"})
@@ -133,16 +133,18 @@ ABSOLUTE RULES — never break these:
 
 TOOLS YOU CAN USE:
 - \`lookup_player_stats(player_name, league?)\` — get a player's current season stats from PlayGM's local cache. MANDATORY for any player/team/stat question (see rule 8). Returns either a structured stat object or \`not_found: true\` (see rule 9). Pass \`league\` ('nba'|'nfl'|'mlb'|'nhl'|'mls') when the question makes the sport unambiguous, to disambiguate cross-sport name collisions.
-- \`find_top_players(league, season, stat, limit?)\` — find the top N players in a league/season by a single stat. MANDATORY for aggregate / leaderboard questions where no specific player is named: "scoring title leader", "MVP candidate", "top scorer", "best ERA", "leading rusher", "home run leader", etc. Returns a ranked array of \`{name, team, value}\`. Stat keys per league:
-    • NBA: points_per_game, rebounds_per_game, assists_per_game, steals_per_game, blocks_per_game, three_pm_per_game.
-    • NFL: passYards, passTDs, rushYards, rushTDs, recYards, recTDs, ints, sacks.
-    • MLB: home_runs, batting_avg, era, strikeouts, wins, rbi, hits.
-    • NHL: goals, assists, points, saves, wins, goals_against_avg.
+- \`find_top_players(league, season, stat, limit?)\` — find the top N players in a league/season by a single stat. MANDATORY for aggregate / leaderboard questions where no specific player is named: "scoring title leader", "MVP candidate", "top scorer", "best ERA", "leading rusher", "home run leader", etc. Returns a ranked array of \`{name, team, value}\`. Stat keys per league (per-game-style aliases like \`points_per_game\`, \`passYards\`, \`home_runs\` are accepted and normalized server-side; the canonical keys are):
+    • NBA: points, rebounds, assists, steals, blocks, three_pm, fg_pct, ft_pct.
+    • NFL: passing_yards, passing_touchdowns, rushing_yards, rushing_touchdowns, receiving_yards, receiving_touchdowns, interceptions, sacks, tackles.
+    • MLB: hr, avg, rbi, runs, sb, hits, obp, slg (hitters); era, wins, losses, saves, k_pitcher (strikeouts), whip (pitchers).
+    • NHL: goals, assists, points (synthetic = goals + assists), sog, plus_minus, blocks, pim.
     • MLS: goals, assists, shots, clean_sheets.
   Examples:
-    - "Who's leading the scoring title?" → find_top_players(league:'nba', season:'2025-26', stat:'points_per_game', limit:5)
-    - "Who's the MVP candidate?" → find_top_players for the relevant league + stat (NBA points_per_game, NFL passYards, MLB home_runs, NHL points).
-    - "Top rusher this year?" → find_top_players(league:'nfl', season:'2025', stat:'rushYards', limit:5)
+    - "Who's leading the scoring title?" → find_top_players(league:'nba', season:'2025-26', stat:'points', limit:5)
+    - "Who's the MVP candidate?" → find_top_players for the relevant league + stat (NBA points, NFL passing_yards, MLB hr, NHL points).
+    - "Top rusher this year?" → find_top_players(league:'nfl', season:'2025', stat:'rushing_yards', limit:5)
+    - "HR leader?" → find_top_players(league:'mlb', season:'2026', stat:'hr', limit:5)
+    - "Top NHL scorer?" → find_top_players(league:'nhl', season:'2025-26', stat:'points', limit:5)
   Default season labels: NBA 2025-26, NFL 2025, MLB 2026, NHL 2025-26, MLS 2026.
   (Built-in Google Search is currently disabled — see migration doc.)
 
@@ -156,10 +158,10 @@ VOICE:
 EXAMPLES — concrete user-question → tool-call mappings. Memorize these:
 
 User: "Who's leading the NBA in scoring this year?"
-Tool call: find_top_players({league: "nba", season: "2025-26", stat: "points_per_game", limit: 5})
+Tool call: find_top_players({league: "nba", season: "2025-26", stat: "points", limit: 5})
 
 User: "Who won the MLB home run title?"
-Tool call: find_top_players({league: "mlb", season: "2026", stat: "home_runs", limit: 1})
+Tool call: find_top_players({league: "mlb", season: "2026", stat: "hr", limit: 1})
 
 User: "How is Mahomes playing?"
 Tool call: lookup_player_stats({player_name: "Patrick Mahomes", league: "nfl"})
@@ -168,7 +170,7 @@ User: "Best ERA in baseball this year?"
 Tool call: find_top_players({league: "mlb", season: "2026", stat: "era", limit: 5})
 
 User: "Who's the top rusher in the NFL?"
-Tool call: find_top_players({league: "nfl", season: "2025", stat: "rushYards", limit: 5})
+Tool call: find_top_players({league: "nfl", season: "2025", stat: "rushing_yards", limit: 5})
 
 User: "Show me Aaron Judge's stats."
 Tool call: lookup_player_stats({player_name: "Aaron Judge", league: "mlb"})
@@ -342,11 +344,130 @@ interface TopPlayerRow {
   value: number;
 }
 
+// ─── Stat-key alias map (Bug C, OTA #8 follow-up) ───────────────────────────
+//
+// The Scout system prompt advertises pretty stat names like
+// `points_per_game`, `home_runs`, `passYards`. The Supabase
+// `player_stats.stats_json` rows actually use the cache's canonical
+// keys: `points`, `hr`, `passing_yards`, etc. Without translation,
+// every find_top_players call returned `not_found` because the
+// requested key was absent from every row.
+//
+// This map normalizes the model's stat argument to the real JSONB key
+// per league. Keys NOT in the map fall through unchanged so future
+// schema additions still work without a code change.
+//
+// IMPORTANT: keep both the "fancy" model-friendly name AND the cache-
+// canonical name in the map (canonical → canonical is an identity
+// entry) so the handler never confuses one for the other. Lower-case
+// match.
+const STAT_ALIAS_BY_LEAGUE: Record<string, Record<string, string>> = {
+  nba: {
+    points_per_game: 'points',
+    ppg: 'points',
+    points: 'points',
+    rebounds_per_game: 'rebounds',
+    rpg: 'rebounds',
+    rebounds: 'rebounds',
+    assists_per_game: 'assists',
+    apg: 'assists',
+    assists: 'assists',
+    steals_per_game: 'steals',
+    spg: 'steals',
+    steals: 'steals',
+    blocks_per_game: 'blocks',
+    bpg: 'blocks',
+    blocks: 'blocks',
+    three_pm_per_game: 'three_pm',
+    three_pm: 'three_pm',
+    threes: 'three_pm',
+    minutes: 'minutes',
+    fg_pct: 'fg_pct',
+    ft_pct: 'ft_pct',
+  },
+  nfl: {
+    passyards: 'passing_yards',
+    passing_yards: 'passing_yards',
+    pass_yards: 'passing_yards',
+    passtds: 'passing_touchdowns',
+    passing_touchdowns: 'passing_touchdowns',
+    pass_touchdowns: 'passing_touchdowns',
+    rushyards: 'rushing_yards',
+    rushing_yards: 'rushing_yards',
+    rush_yards: 'rushing_yards',
+    rushtds: 'rushing_touchdowns',
+    rushing_touchdowns: 'rushing_touchdowns',
+    rush_touchdowns: 'rushing_touchdowns',
+    recyards: 'receiving_yards',
+    receiving_yards: 'receiving_yards',
+    rec_yards: 'receiving_yards',
+    rectds: 'receiving_touchdowns',
+    receiving_touchdowns: 'receiving_touchdowns',
+    rec_touchdowns: 'receiving_touchdowns',
+    ints: 'interceptions',
+    interceptions: 'interceptions',
+    sacks: 'sacks',
+    tackles: 'tackles',
+    passer_rating: 'passer_rating',
+  },
+  mlb: {
+    home_runs: 'hr',
+    homeruns: 'hr',
+    hr: 'hr',
+    batting_avg: 'avg',
+    avg: 'avg',
+    average: 'avg',
+    rbi: 'rbi',
+    rbis: 'rbi',
+    runs: 'runs',
+    sb: 'sb',
+    stolen_bases: 'sb',
+    hits: 'hits',
+    obp: 'obp',
+    slg: 'slg',
+    era: 'era',
+    wins: 'wins',
+    losses: 'losses',
+    saves: 'saves',
+    strikeouts: 'k_pitcher',
+    k_pitcher: 'k_pitcher',
+    whip: 'whip',
+    innings_pitched: 'innings_pitched',
+  },
+  nhl: {
+    goals: 'goals',
+    assists: 'assists',
+    points: 'points',     // NHL points isn't a stored key — handled in code below
+    saves: 'saves',
+    wins: 'wins',
+    goals_against_avg: 'goals_against_avg',
+    sog: 'sog',
+    shots_on_goal: 'sog',
+    plus_minus: 'plus_minus',
+    blocks: 'blocks',
+    pim: 'pim',
+  },
+  mls: {
+    goals: 'goals',
+    assists: 'assists',
+    shots: 'shots',
+    clean_sheets: 'clean_sheets',
+  },
+};
+
+function resolveStatKey(league: string, stat: string): string {
+  const map = STAT_ALIAS_BY_LEAGUE[league.toLowerCase()];
+  if (!map) return stat;
+  const k = stat.toLowerCase().replace(/[\s-]+/g, '_');
+  return map[k] ?? stat;
+}
+
 async function handleFindTopPlayers(args: FindTopPlayersArgs): Promise<Record<string, unknown>> {
   topPlayersUseCount++;
   const league = (args.league ?? '').toLowerCase().trim();
   const season = (args.season ?? '').trim();
-  const stat = (args.stat ?? '').trim();
+  const statRaw = (args.stat ?? '').trim();
+  const stat = resolveStatKey(league, statRaw);
   const limit = Math.max(1, Math.min(10, Number.isFinite(args.limit) ? Number(args.limit) : 5));
   if (!league || !season || !stat) {
     return { error: 'find_top_players requires league, season, and stat' };
@@ -376,14 +497,28 @@ async function handleFindTopPlayers(args: FindTopPlayersArgs): Promise<Record<st
       };
     }
     const rows: TopPlayerRow[] = [];
+    // NHL "points" is a synthetic = goals + assists (not stored in JSONB).
+    // Detect and compute on the fly so the leaderboard works for the
+    // most-asked NHL leaderboard question ("who leads the NHL in points?").
+    const isNhlPointsSynthetic = league === 'nhl' && stat === 'points';
     for (const r of data as Array<{
       full_name: string | null;
       team: string | null;
       team_abbr: string | null;
       stats_json: Record<string, unknown> | null;
     }>) {
-      const raw = r.stats_json?.[stat];
-      const num = typeof raw === 'number' ? raw : typeof raw === 'string' ? Number(raw) : NaN;
+      let num: number = NaN;
+      if (isNhlPointsSynthetic && r.stats_json) {
+        const g = r.stats_json['goals'];
+        const a = r.stats_json['assists'];
+        const goalsNum = typeof g === 'number' ? g : typeof g === 'string' ? Number(g) : 0;
+        const assistsNum = typeof a === 'number' ? a : typeof a === 'string' ? Number(a) : 0;
+        const total = (Number.isFinite(goalsNum) ? goalsNum : 0) + (Number.isFinite(assistsNum) ? assistsNum : 0);
+        if (total > 0) num = total;
+      } else {
+        const raw = r.stats_json?.[stat];
+        num = typeof raw === 'number' ? raw : typeof raw === 'string' ? Number(raw) : NaN;
+      }
       if (!Number.isFinite(num)) continue;
       rows.push({
         name: r.full_name ?? '(unknown)',
@@ -395,7 +530,7 @@ async function handleFindTopPlayers(args: FindTopPlayersArgs): Promise<Record<st
       return {
         not_found: true,
         message:
-          `Stat key "${stat}" is not populated on any ${league} ${season} row. ` +
+          `Stat key "${stat}" (from "${statRaw}") is not populated on any ${league} ${season} row. ` +
           `Per Scout system rule 9, tell the kid you don't have that leaderboard ` +
           `and offer to scout a specific player instead.`,
       };
@@ -408,6 +543,7 @@ async function handleFindTopPlayers(args: FindTopPlayersArgs): Promise<Record<st
       league: league.toUpperCase(),
       season,
       stat,
+      stat_requested: statRaw,
       players: rows.slice(0, limit),
     };
   } catch (e) {
@@ -472,11 +608,11 @@ const findTopPlayersDecl = {
       stat: {
         type: SchemaType.STRING,
         description:
-          'Stat key in stats_json. NBA: points_per_game, rebounds_per_game, ' +
-          'assists_per_game, steals_per_game, blocks_per_game, three_pm_per_game. ' +
-          'NFL: passYards, passTDs, rushYards, rushTDs, recYards, recTDs, ints, sacks. ' +
-          'MLB: home_runs, batting_avg, era, strikeouts, wins, rbi, hits. ' +
-          'NHL: goals, assists, points, saves, wins, goals_against_avg. ' +
+          'Stat key in stats_json (per-game aliases like points_per_game, passYards, home_runs accepted and normalized server-side). Canonical keys: ' +
+          'NBA: points, rebounds, assists, steals, blocks, three_pm, fg_pct, ft_pct. ' +
+          'NFL: passing_yards, passing_touchdowns, rushing_yards, rushing_touchdowns, receiving_yards, receiving_touchdowns, interceptions, sacks, tackles. ' +
+          'MLB hitters: hr, avg, rbi, runs, sb, hits, obp, slg. MLB pitchers: era, wins, losses, saves, k_pitcher, whip. ' +
+          'NHL: goals, assists, points (synthetic = goals + assists), sog, plus_minus, blocks, pim. ' +
           'MLS: goals, assists, shots, clean_sheets.',
       },
       limit: {
