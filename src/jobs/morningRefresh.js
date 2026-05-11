@@ -12,6 +12,8 @@
  */
 
 require('dotenv').config();
+const fs   = require('fs');
+const path = require('path');
 const { lookupPlayer, lastTeamEvents } = require('../api/sportsdb');
 const {
   getAllPlayers, upsertPlayer,
@@ -19,6 +21,8 @@ const {
   diffSnapshots,
   startRefreshLog, finishRefreshLog,
 } = require('../models/player');
+
+const DIFF_DIR = process.env.DIFF_DIR || './diffs';
 
 // Pause between API calls to respect free-tier rate limit (~1 req/s)
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -156,6 +160,45 @@ async function run() {
 
   console.log(`\n=== Done — ${updated} updated, ${failed} failed ===\n`);
   printDiffReport(diffSummary);
+  const { txtFile, jsonFile } = writeDiffFile(diffSummary, new Date());
+  console.log(`Diff files: ${txtFile}  |  ${jsonFile}`);
+}
+
+function writeDiffFile(diffSummary, runAt) {
+  const date = runAt.toISOString().slice(0, 10);
+  fs.mkdirSync(path.resolve(DIFF_DIR), { recursive: true });
+
+  const jsonFile = path.resolve(DIFF_DIR, `${date}.json`);
+  fs.writeFileSync(jsonFile, JSON.stringify(
+    { date, generated_at: runAt.toISOString(), changes: diffSummary },
+    null, 2,
+  ));
+
+  const lines = [`=== PlayGM Diff Report — ${date} ===`, ''];
+  const changed = diffSummary.filter((e) => e.diff && e.diff.length > 0);
+  if (changed.length === 0) {
+    lines.push('No stat changes detected.');
+  } else {
+    changed.forEach(({ player, diff }) => {
+      lines.push(`  ${player}`);
+      diff.forEach(({ field, from, to }) => {
+        const label = field.replace(/_/g, ' ');
+        lines.push(`    ${label.padEnd(22)} ${String(from ?? '—').padStart(10)} → ${to ?? '—'}`);
+      });
+      lines.push('');
+    });
+  }
+  const errors = diffSummary.filter((e) => e.error);
+  if (errors.length > 0) {
+    lines.push('  Errors:');
+    errors.forEach(({ player, error }) => lines.push(`    ${player}: ${error}`));
+    lines.push('');
+  }
+
+  const txtFile = path.resolve(DIFF_DIR, `${date}.txt`);
+  fs.writeFileSync(txtFile, lines.join('\n') + '\n');
+
+  return { jsonFile, txtFile };
 }
 
 function printDiffReport(diffSummary) {

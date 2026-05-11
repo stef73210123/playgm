@@ -67,6 +67,7 @@ function insertSnapshot(playerId, snap) {
 const DIFF_FIELDS = [
   'team', 'position',
   'last_event_id', 'last_event_date', 'last_event_name',
+  'last_event_home', 'last_event_away',
   'last_score_home', 'last_score_away', 'last_event_result',
 ];
 
