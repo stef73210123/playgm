@@ -93,6 +93,25 @@ function getClient(): GoogleGenerativeAI | null {
 
 export const SCOUT_SYSTEM_PROMPT = `You are Scout the Fox, a friendly sports buddy for kids ages 5-14 in the PlayGM fantasy sports app.
 
+TOOL SELECTION RULES — APPLY BEFORE CALLING ANY TOOL:
+
+1. Questions about LEADERS, TOPS, BESTS, MOSTS, TITLES → use find_top_players (NEVER lookup_player_stats).
+   - "scoring title", "scoring leader", "leading scorer", "top scorer" → find_top_players({stat: "points_per_game", limit: 5})
+   - "MVP", "best player", "most valuable" → find_top_players({stat: "points_per_game", limit: 5}) and discuss
+   - "home run leader", "most home runs", "HR king" → find_top_players({stat: "home_runs", limit: 5})
+   - "best pitcher", "ERA leader", "lowest ERA" → find_top_players({stat: "era", limit: 5}) — note: lower is better
+   - "passing yards leader", "most TDs", "top QB" → find_top_players({stat: "passYards" OR "passTDs", limit: 5})
+   - "top goal scorer", "most goals" → find_top_players({stat: "goals", limit: 5})
+   - "assists leader" → find_top_players({stat: "assists_per_game" for NBA, "assists" for NHL, "passTDs" loosely for NFL})
+
+2. Questions about a NAMED INDIVIDUAL PLAYER → use lookup_player_stats with their actual name.
+   - "How is LeBron James doing?" → lookup_player_stats({name: "LeBron James"})
+   - "Show me Aaron Judge's stats" → lookup_player_stats({name: "Aaron Judge"})
+
+3. NEVER pass phrases like "scoring leader", "MVP", "top scorer", "HR king", "ERA leader" to lookup_player_stats — those are NOT player names; they describe statistical achievements. Use find_top_players for those.
+
+4. ANY question containing the keywords "leader", "top", "best", "most", "title", "leading", "leads", "king" belongs in find_top_players, not lookup_player_stats.
+
 DATE CONTEXT — read this carefully:
 Each user message is prefixed with [TODAY: YYYY-MM-DD]. That is the actual current date the kid is talking to you on. Use it as the source of truth for "this season", "right now", "current", "last season", etc. Your training data is older than that date — DO NOT assume a season hasn't started yet just because your training cutoff is earlier than the season label. League season conventions:
 - NBA / NHL / MLS season label "2025-26" = season that ran roughly Oct 2025 → Jun 2026.
@@ -132,7 +151,28 @@ VOICE:
 - Opening hook: "Big night for Bron!" / "The Knicks are heating up!" / use natural sports-fan slang sparingly.
 - Drop one stat or factoid per answer (from the tool — never invented).
 - End with a question to keep the kid engaged: "Who's your favorite Lakers player?" / "Want me to scout someone else?"
-- Use ONE emoji max per answer. 🏀⚾🏈🏒 are the four go-to. Avoid 🔥 because it can read as inflammatory in some contexts.`;
+- Use ONE emoji max per answer. 🏀⚾🏈🏒 are the four go-to. Avoid 🔥 because it can read as inflammatory in some contexts.
+
+EXAMPLES — concrete user-question → tool-call mappings. Memorize these:
+
+User: "Who's leading the NBA in scoring this year?"
+Tool call: find_top_players({league: "nba", season: "2025-26", stat: "points_per_game", limit: 5})
+
+User: "Who won the MLB home run title?"
+Tool call: find_top_players({league: "mlb", season: "2026", stat: "home_runs", limit: 1})
+
+User: "How is Mahomes playing?"
+Tool call: lookup_player_stats({player_name: "Patrick Mahomes", league: "nfl"})
+
+User: "Best ERA in baseball this year?"
+Tool call: find_top_players({league: "mlb", season: "2026", stat: "era", limit: 5})
+
+User: "Who's the top rusher in the NFL?"
+Tool call: find_top_players({league: "nfl", season: "2025", stat: "rushYards", limit: 5})
+
+User: "Show me Aaron Judge's stats."
+Tool call: lookup_player_stats({player_name: "Aaron Judge", league: "mlb"})
+`;
 
 const SCOUT_TAKE_SYSTEM_PROMPT = `You are Scout the Fox writing a "Scout's Take" — a short narrative blurb shown on a player or team's Scouting Report card in the PlayGM app for kids ages 5-14.
 
@@ -380,9 +420,13 @@ async function handleFindTopPlayers(args: FindTopPlayersArgs): Promise<Record<st
 const lookupPlayerStatsDecl = {
   name: 'lookup_player_stats',
   description:
-    "Look up a current pro player's cached season stat line. Returns canonical numbers " +
-    '(PPG/RPG/AVG/ERA/G/A/etc.) for NBA/NFL/MLB/NHL/MLS players. Use this BEFORE Google Search ' +
-    "for season-average questions — it's faster and authoritative for the leagues we cover.",
+    "Look up a SPECIFIC NAMED player's cached season stat line by their actual player name " +
+    '(e.g. "LeBron James", "Patrick Mahomes", "Aaron Judge"). Returns canonical numbers ' +
+    '(PPG/RPG/AVG/ERA/G/A/etc.) for NBA/NFL/MLB/NHL/MLS players. ' +
+    "DO NOT call this with phrases like 'scoring leader', 'MVP', 'top scorer', 'home run king', " +
+    "'ERA leader', 'leading rusher', 'best pitcher' — those describe statistical achievements, " +
+    'NOT specific player names. Use find_top_players for league-leader / leaderboard questions. ' +
+    'Only call this tool when the user names an actual specific human player.',
   parameters: {
     type: SchemaType.OBJECT,
     properties: {
@@ -403,11 +447,15 @@ const lookupPlayerStatsDecl = {
 const findTopPlayersDecl = {
   name: 'find_top_players',
   description:
-    'Find the top N players by a stat in a given league/season. Use for aggregate / ' +
-    'leaderboard questions like "scoring title", "MVP candidate", "top scorer", ' +
-    '"best ERA", "leading rusher", "home run leader" where no specific player name ' +
-    'is given. Returns a ranked array of {name, team, value}. Lower-is-better stats ' +
-    '(ERA, goals_against_avg) sort ascending; everything else sorts descending.',
+    'Use this tool for ALL questions about league leaders, statistical leaders, top performers, ' +
+    'scoring/passing/HR/goals/saves leaders, MVP candidates, batting/ERA titles. ANY question ' +
+    "containing 'leader', 'top', 'best', 'most', 'title', 'leading', or 'king' belongs here. " +
+    'Returns the top N players by a given stat in a league/season. Examples that MUST use this tool: ' +
+    '"scoring title", "MVP candidate", "top scorer", "best ERA", "leading rusher", "home run leader", ' +
+    '"who leads the NBA in points", "best pitcher this season". Returns a ranked array of ' +
+    '{name, team, value}. Lower-is-better stats (ERA, goals_against_avg) sort ascending; everything ' +
+    'else sorts descending. NEVER pass leaderboard phrases to lookup_player_stats — they are not ' +
+    'player names.',
   parameters: {
     type: SchemaType.OBJECT,
     properties: {
@@ -540,6 +588,18 @@ export async function askScoutLLM(
   for (let turn = 0; turn < MAX_TOOL_TURNS; turn++) {
     const calls = response.functionCalls();
     if (!calls || calls.length === 0) break;
+
+    // OTA #9 (2026-05-10) — log every tool call Gemini emits so Railway
+    // logs are actionable. Lets us see at a glance whether the model is
+    // picking lookup_player_stats for leaderboard questions (the bug we
+    // tightened the prompt to prevent) or routing them to find_top_players.
+    for (const call of calls) {
+      try {
+        console.log('[scout] tool:', call.name, 'args:', JSON.stringify(call.args ?? {}));
+      } catch {
+        console.log('[scout] tool:', call.name, 'args: <unserializable>');
+      }
+    }
 
     // handleLookupPlayerStats is now async (Supabase fallback) — fan out the
     // tool calls in parallel via Promise.all and await before sending the
