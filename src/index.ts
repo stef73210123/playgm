@@ -41,6 +41,7 @@ import { syncRoutes } from './routes/sync.js';
 import { tradeRoutes } from './routes/trade.js';
 import { startStatsRefreshJobs } from './jobs/refreshStats.js';
 import { startHighlightsCron } from './jobs/highlightsCron.js';
+import { startMorningPlayerRefresh } from './jobs/morningPlayerRefresh.js';
 import { installAdminAuth } from './middleware/adminAuth.js';
 import { getActiveScoutProvider, getScoutLLMStats } from './services/scoutLLM.js';
 
@@ -156,6 +157,7 @@ try {
   startStatsRefreshJobs(server.log); // Per-league ESPN refresh (daily 04:00 ET + hourly in-season)
   startHighlightsCron(server.log);   // Daily 05:30 ET — team + player highlight refresh
   startScheduleRefreshJobs(server.log); // Every 6 hours — refresh weekly schedule cache from ESPN
+  startMorningPlayerRefresh(server.log); // Daily 07:00 ET — TheSportsDB player stats + results diff
 
   // Daily 5am ET highlight cache refresh (America/New_York handles DST automatically)
   cron.schedule('0 5 * * *', () => warmHighlightCache(server.log), {
