@@ -34,6 +34,7 @@ import { runtimeConfigRoutes } from './routes/runtimeConfig.js';
 import { playersRoutes } from './routes/players.js';
 import { statLineRoutes } from './routes/statLines.js';
 import { playerCareerRoutes } from './routes/playerCareer.js';
+import { playerCareerRollupRoutes } from './routes/playerCareerRollup.js';
 import { teamRecordsRoutes } from './routes/teamRecords.js';
 import { scheduleRoutes, startScheduleRefreshJobs } from './routes/schedule.js';
 import { authRoutes } from './routes/auth.js';
@@ -41,6 +42,7 @@ import { meRoutes } from './routes/me.js';
 import { syncRoutes } from './routes/sync.js';
 import { tradeRoutes } from './routes/trade.js';
 import { startStatsRefreshJobs } from './jobs/refreshStats.js';
+import { startGamesRefreshJobs } from './jobs/refreshGames.js';
 import { startHighlightsCron } from './jobs/highlightsCron.js';
 import { installAdminAuth } from './middleware/adminAuth.js';
 import { getActiveScoutProvider, getScoutLLMStats } from './services/scoutLLM.js';
@@ -127,6 +129,7 @@ await server.register(runtimeConfigRoutes, { prefix: '/' });
 await server.register(playersRoutes, { prefix: '/' });
 await server.register(statLineRoutes, { prefix: '/' });
 await server.register(playerCareerRoutes, { prefix: '/' });
+await server.register(playerCareerRollupRoutes, { prefix: '/' });
 await server.register(teamRecordsRoutes, { prefix: '/' });
 await server.register(scheduleRoutes, { prefix: '/' });
 await server.register(authRoutes, { prefix: '/' });
@@ -156,6 +159,7 @@ try {
   startMorningReveal(server.log); // 6am UTC victory reveal
   startLiveScoreSync();           // 120-s live score poll (War Room)
   startStatsRefreshJobs(server.log); // Per-league ESPN refresh (daily 04:00 ET + hourly in-season)
+  startGamesRefreshJobs(server.log); // Per-league games + box-score ingest via API-Sports (daily 03:30 ET staggered + hourly :15 in-season)
   startHighlightsCron(server.log);   // Daily 05:30 ET — team + player highlight refresh
   startScheduleRefreshJobs(server.log); // Every 6 hours — refresh weekly schedule cache from ESPN
 

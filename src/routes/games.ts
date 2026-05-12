@@ -13,6 +13,7 @@ import {
   SportsDbHttpError,
   type SportsDbEvent,
 } from '../services/sportsdb.js';
+import { supabase } from '../db/client.js';
 
 // ─── Current MLS season (standings work for soccer only) ─────────────────────
 const CURRENT_SEASON: Record<string, string> = {
@@ -31,6 +32,17 @@ const LEAGUE_IDS = {
 };
 
 const SUPPORTED_LEAGUE_IDS = new Set(Object.values(LEAGUE_IDS));
+
+// Sport-id → TheSportsDB league-id map (the canonical sport keys match
+// SportId in services/sportsConfig.ts, all lowercase). Used by the
+// /api/games/upcoming/:sport Supabase-with-TheSportsDB-fallback route.
+const SPORT_TO_LEAGUE_ID: Record<string, string> = {
+  nba: LEAGUE_IDS.NBA,
+  nfl: LEAGUE_IDS.NFL,
+  mlb: LEAGUE_IDS.MLB,
+  nhl: LEAGUE_IDS.NHL,
+  mls: LEAGUE_IDS.MLS,
+};
 
 // ─── Status mapping ───────────────────────────────────────────────────────────
 
@@ -312,6 +324,167 @@ export async function gamesRoutes(fastify: FastifyInstance): Promise<void> {
       throw err;
     }
   });
+
+  // GET /api/games/upcoming/:sport?days=N — next N days of scheduled games for one sport.
+  //
+  // Backs the HomeScreen "Upcoming Matchups" carousel and replaces the wave-2
+  // TheSportsDB-direct implementation with a Supabase read off the new `games`
+  // table populated by jobs/refreshGames.ts. The response shape (`games:
+  // ApiGame[]`) matches what apiClient.getUpcomingGames already expects, so
+  // the client wave-4 hooks see no breaking change.
+  //
+  // Fallback: when `games` is empty for the sport (cron hasn't run yet, or
+  // wasn't wired for this league — NFL/MLB/NHL today), we transparently fall
+  // through to TheSportsDB's getEventsNextLeague so the carousel doesn't go
+  // dark mid-rollout. Once the cron is healthy, the Supabase branch wins
+  // every call.
+  //
+  // days clamped to [1, 14]. sport must be lowercase nba|nfl|mlb|nhl|mls.
+  fastify.get<{
+    Params: { sport: string };
+    Querystring: { days?: string };
+  }>('/api/games/upcoming/:sport', async (req, reply) => {
+    const sport = req.params.sport.toLowerCase();
+    const leagueId = SPORT_TO_LEAGUE_ID[sport];
+    if (!leagueId) {
+      return reply.code(400).send({ error: 'invalid_sport', sport });
+    }
+    const rawDays = Number(req.query.days ?? 7);
+    const days = Math.min(Math.max(Number.isFinite(rawDays) ? rawDays : 7, 1), 14);
+
+    const today = todayUTC();
+    const horizon = (() => {
+      const d = new Date();
+      d.setUTCDate(d.getUTCDate() + days);
+      return d.toISOString().slice(0, 10);
+    })();
+
+    // ─── 1) Try Supabase `games` table first. ──────────────────────────────
+    try {
+      const { data, error } = await supabase
+        .from('games')
+        .select('id, source, sport, season, game_date, status, home_team, home_team_abbr, away_team, away_team_abbr, source_game_id')
+        .eq('sport', sport)
+        .in('status', ['scheduled', 'inprogress'])
+        .gte('game_date', today)
+        .lte('game_date', horizon)
+        .order('game_date', { ascending: true })
+        .limit(200);
+
+      if (!error && data && data.length > 0) {
+        // Project to the ApiGame shape the client already understands.
+        const games = data.map((row) => ({
+          id: row.id as string,
+          leagueId,
+          league: sport.toUpperCase(),
+          sport: sport.toUpperCase(),
+          homeTeam: row.home_team as string,
+          awayTeam: row.away_team as string,
+          homeTeamId: null,
+          awayTeamId: null,
+          homeTeamBadge: null,
+          awayTeamBadge: null,
+          homeScore: null,
+          awayScore: null,
+          status: row.status === 'inprogress' ? 'live' : 'upcoming',
+          dateEvent: row.game_date as string,
+          time: null,
+          timeLocal: null,
+          timestamp: null,
+          venue: null,
+          season: row.season as string,
+        }));
+        return reply.send({ games });
+      }
+      // error.code PGRST205 / "schema cache" — table missing. Fall through to
+      // TheSportsDB so the client doesn't blank out during the deploy window.
+    } catch (err) {
+      req.log.warn({ err }, '[games/upcoming] Supabase read failed, falling through to TheSportsDB');
+    }
+
+    // ─── 2) Fallback: TheSportsDB live fetch. ──────────────────────────────
+    try {
+      const events = await getEventsNextLeague(leagueId);
+      const filtered = events.filter((e) => {
+        const d = (e.dateEvent ?? '').slice(0, 10);
+        return d >= today && d <= horizon;
+      });
+      return reply.send({ games: filtered.map(mapEvent) });
+    } catch (err) {
+      if (err instanceof SportsDbHttpError) {
+        return reply.code(502).send({ error: `TheSportsDB error ${err.status}` });
+      }
+      throw err;
+    }
+  });
+
+  // GET /api/games/:gameId/boxscore — per-player line for a single game.
+  //
+  // Reads `games` for the meta + `game_stats` for the player rows. Returns
+  // 404 with `error: 'box_score_not_available'` when either the game isn't
+  // in the cache OR no player rows have been ingested yet (real-data-only;
+  // FilmRoom renders "Box score not available" rather than synthesizing).
+  //
+  //   Response shape:
+  //     { game: { id, sport, season, gameDate, status, homeTeam, homeTeamAbbr,
+  //               homeScore, awayTeam, awayTeamAbbr, awayScore },
+  //       players: [{ playerId, playerName, team, stats }] }
+  //
+  // stats_json shape mirrors player_stats.stats_json — the same per-sport
+  // projector in routes/statLines.ts can render either surface.
+  fastify.get<{ Params: { gameId: string } }>(
+    '/api/games/:gameId/boxscore',
+    async (req, reply) => {
+      const gameId = decodeURIComponent(req.params.gameId);
+
+      const [{ data: gameRow, error: gErr }, { data: statRows, error: sErr }] = await Promise.all([
+        supabase
+          .from('games')
+          .select('id, sport, season, game_date, status, home_team, home_team_abbr, home_score, away_team, away_team_abbr, away_score')
+          .eq('id', gameId)
+          .maybeSingle(),
+        supabase
+          .from('game_stats')
+          .select('player_id, player_name, team, stats_json')
+          .eq('game_id', gameId),
+      ]);
+
+      if (gErr && gErr.code !== 'PGRST116') {
+        if (gErr.code === 'PGRST205' || /schema cache/i.test(gErr.message)) {
+          return reply.code(503).send({ error: 'games_table_missing', detail: gErr.message });
+        }
+        return reply.code(500).send({ error: gErr.message });
+      }
+      if (sErr && sErr.code !== 'PGRST205' && !/schema cache/i.test(sErr.message)) {
+        return reply.code(500).send({ error: sErr.message });
+      }
+      if (!gameRow || !statRows || statRows.length === 0) {
+        return reply.code(404).send({ error: 'box_score_not_available', gameId });
+      }
+
+      return reply.send({
+        game: {
+          id: gameRow.id as string,
+          sport: gameRow.sport as string,
+          season: gameRow.season as string,
+          gameDate: gameRow.game_date as string,
+          status: gameRow.status as string,
+          homeTeam: gameRow.home_team as string,
+          homeTeamAbbr: gameRow.home_team_abbr as string,
+          homeScore: gameRow.home_score as number | null,
+          awayTeam: gameRow.away_team as string,
+          awayTeamAbbr: gameRow.away_team_abbr as string,
+          awayScore: gameRow.away_score as number | null,
+        },
+        players: statRows.map((r) => ({
+          playerId: r.player_id as string,
+          playerName: (r.player_name as string | null) ?? null,
+          team: r.team as string,
+          stats: r.stats_json as Record<string, number>,
+        })),
+      });
+    },
+  );
 
   // GET /api/standings/:leagueId — only returns data for soccer leagues (MLS, EPL, etc.)
   fastify.get<{ Params: { leagueId: string } }>('/api/standings/:leagueId', async (req, reply) => {

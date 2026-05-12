@@ -24,9 +24,15 @@ export async function leaderboardRoutes(fastify: FastifyInstance): Promise<void>
     // mockLeaderboard.ts. Switched to level_index (the numeric 0-12 ladder) and
     // surfaced level_tier too so the client can render either the number or the
     // tier name without a second round-trip.
+    //
+    // 2026-05-12 (follow-up) — production profiles table is also missing `pp`
+    // (schema.sql still declares it; some migration drift presumably dropped
+    // it). The User model treats pp as lifetime experience and play_points as
+    // current-week, so we stop-gap by setting pp = play_points until the prod
+    // column comes back. This keeps the leaderboard render stable.
     const { data, error } = await supabase
       .from('profiles')
-      .select('id, handle, level_index, level_tier, gm_grade, play_points, streak, pp')
+      .select('id, handle, level_index, level_tier, gm_grade, play_points, streak')
       .order('play_points', { ascending: false })
       .limit(limit);
 
@@ -38,6 +44,7 @@ export async function leaderboardRoutes(fastify: FastifyInstance): Promise<void>
       // value matching its existing User.level shape, plus the tier name
       // verbatim for surfaces that want "All-Star" instead of "8".
       const levelIndex = (r['level_index'] as number | null) ?? 0;
+      const playPoints = (r['play_points'] as number | null) ?? 0;
       return {
         rank: idx + 1,
         id: r['id'] as string,
@@ -45,9 +52,10 @@ export async function leaderboardRoutes(fastify: FastifyInstance): Promise<void>
         level: levelIndex + 1,
         levelTier: (r['level_tier'] as string | null) ?? 'Peewee',
         gmGrade: (r['gm_grade'] as string | null) ?? 'C',
-        playPoints: (r['play_points'] as number | null) ?? 0,
+        playPoints,
         streak: (r['streak'] as number | null) ?? 0,
-        pp: (r['pp'] as number | null) ?? 0,
+        // pp stop-gap: derive from play_points until prod re-adds the column.
+        pp: playPoints,
       };
     });
 
