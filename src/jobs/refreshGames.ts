@@ -158,7 +158,7 @@ interface GameRow {
 async function upsertGames(rows: GameRow[]): Promise<{ inserted: number; error?: string }> {
   if (rows.length === 0) return { inserted: 0 };
   const { error, count } = await supabase
-    .from('games')
+    .from('live_games')
     .upsert(rows, { onConflict: 'id', count: 'exact', ignoreDuplicates: false });
   if (error) {
     return { inserted: 0, error: error.message };
@@ -180,7 +180,7 @@ async function upsertGameStats(rows: GameStatRow[]): Promise<{ inserted: number;
   if (rows.length === 0) return { inserted: 0 };
   // The composite primary key on (game_id, player_id) handles the conflict.
   const { error, count } = await supabase
-    .from('game_stats')
+    .from('live_game_stats')
     .upsert(rows, { onConflict: 'game_id,player_id', count: 'exact', ignoreDuplicates: false });
   if (error) {
     return { inserted: 0, error: error.message };
@@ -321,7 +321,7 @@ async function runNbaPipeline(log?: FastifyBaseLogger, opts: { boxScores?: boole
   // from yesterday to avoid re-fetching every prior final each day.
   if (opts.boxScores !== false) {
     const { data: finals, error: fErr } = await supabase
-      .from('games')
+      .from('live_games')
       .select('id, source_game_id, home_team_abbr, away_team_abbr')
       .eq('sport', 'nba')
       .eq('status', 'final')
@@ -355,13 +355,13 @@ async function runNbaPipeline(log?: FastifyBaseLogger, opts: { boxScores?: boole
 
 // ─── team_records recompute ────────────────────────────────────────────────
 //
-// Aggregate finals out of `games` and upsert one row per team. Win/loss counts
-// come from comparing home_score vs away_score; ties only matter for NFL.
+// Aggregate finals out of `live_games` and upsert one row per team. Win/loss
+// counts come from comparing home_score vs away_score; ties only matter for NFL.
 
 async function recomputeTeamRecords(sport: League, log?: FastifyBaseLogger): Promise<{ rows: number; error?: string }> {
   const season = SEASON_BY_LEAGUE[sport];
   const { data: finals, error } = await supabase
-    .from('games')
+    .from('live_games')
     .select('home_team_abbr, away_team_abbr, home_score, away_score')
     .eq('sport', sport)
     .eq('season', season)

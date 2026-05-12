@@ -359,10 +359,13 @@ export async function gamesRoutes(fastify: FastifyInstance): Promise<void> {
       return d.toISOString().slice(0, 10);
     })();
 
-    // ─── 1) Try Supabase `games` table first. ──────────────────────────────
+    // ─── 1) Try Supabase `live_games` table first. ─────────────────────────
+    // (live_games is the new ingest surface from refreshGames.ts; the legacy
+    //  v1 `games` table is unrelated — it powers player_game_stats and the
+    //  season_player_stats materialized view.)
     try {
       const { data, error } = await supabase
-        .from('games')
+        .from('live_games')
         .select('id, source, sport, season, game_date, status, home_team, home_team_abbr, away_team, away_team_abbr, source_game_id')
         .eq('sport', sport)
         .in('status', ['scheduled', 'inprogress'])
@@ -439,12 +442,12 @@ export async function gamesRoutes(fastify: FastifyInstance): Promise<void> {
 
       const [{ data: gameRow, error: gErr }, { data: statRows, error: sErr }] = await Promise.all([
         supabase
-          .from('games')
+          .from('live_games')
           .select('id, sport, season, game_date, status, home_team, home_team_abbr, home_score, away_team, away_team_abbr, away_score')
           .eq('id', gameId)
           .maybeSingle(),
         supabase
-          .from('game_stats')
+          .from('live_game_stats')
           .select('player_id, player_name, team, stats_json')
           .eq('game_id', gameId),
       ]);
