@@ -36,6 +36,8 @@ function migrate(db) {
       -- core identity fields snapshotted for diffing
       team        TEXT,
       position    TEXT,
+      -- player status (Active, Retired, On Loan, etc.)
+      status      TEXT,
       -- last event result
       last_event_id     TEXT,
       last_event_date   TEXT,
@@ -59,6 +61,12 @@ function migrate(db) {
       diff_summary TEXT
     );
   `);
+
+  // Additive column migrations for existing databases
+  const cols = db.prepare('PRAGMA table_info(player_stats)').all().map((c) => c.name);
+  if (!cols.includes('status')) {
+    db.exec('ALTER TABLE player_stats ADD COLUMN status TEXT');
+  }
 }
 
 module.exports = { getDb };

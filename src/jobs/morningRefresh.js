@@ -28,6 +28,7 @@ function buildSnapshot(apiPlayer, lastEvent) {
   return {
     team:     apiPlayer.strTeam     || null,
     position: apiPlayer.strPosition || null,
+    status:   apiPlayer.strStatus   || null,
 
     last_event_id:     lastEvent?.idEvent     || null,
     last_event_date:   lastEvent?.dateEvent   || null,
