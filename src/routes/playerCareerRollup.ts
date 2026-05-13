@@ -82,37 +82,57 @@ function projectRow(row: PlayerCareerRow): CareerRollupResponse {
   };
 }
 
+async function handleCareerRollup(
+  playerId: string,
+  reply: import('fastify').FastifyReply,
+) {
+  const { data, error } = await supabase
+    .from('player_career')
+    .select('*')
+    .eq('player_id', playerId)
+    .maybeSingle();
+
+  if (error && error.code !== 'PGRST116') {
+    // Surface table-missing as 503 so the client can fall through cleanly.
+    if (error.code === 'PGRST205' || /schema cache/i.test(error.message)) {
+      return reply.code(503).send({ error: 'player_career_table_missing', detail: error.message });
+    }
+    return reply.code(500).send({ error: error.message });
+  }
+
+  if (!data) {
+    // No row yet — backfill hasn't covered this player.
+    return reply.code(404).send({ error: 'player_career_not_found', player_id: playerId });
+  }
+
+  const row = data as PlayerCareerRow;
+  if (!isSportEnabled(row.sport as SportId)) {
+    return reply.code(404).send({ error: 'sport_disabled', sport: row.sport });
+  }
+
+  return { career: projectRow(row) };
+}
+
 export async function playerCareerRollupRoutes(fastify: FastifyInstance): Promise<void> {
   fastify.get<{ Params: { playerId: string } }>(
     '/api/players/:playerId/career-rollup',
     async (req, reply) => {
       const playerId = decodeURIComponent(req.params.playerId);
+      return handleCareerRollup(playerId, reply);
+    },
+  );
 
-      const { data, error } = await supabase
-        .from('player_career')
-        .select('*')
-        .eq('player_id', playerId)
-        .maybeSingle();
-
-      if (error && error.code !== 'PGRST116') {
-        // Surface table-missing as 503 so the client can fall through cleanly.
-        if (error.code === 'PGRST205' || /schema cache/i.test(error.message)) {
-          return reply.code(503).send({ error: 'player_career_table_missing', detail: error.message });
-        }
-        return reply.code(500).send({ error: error.message });
-      }
-
-      if (!data) {
-        // No row yet — backfill hasn't covered this player.
-        return reply.code(404).send({ error: 'player_career_not_found', player_id: playerId });
-      }
-
-      const row = data as PlayerCareerRow;
-      if (!isSportEnabled(row.sport as SportId)) {
-        return reply.code(404).send({ error: 'sport_disabled', sport: row.sport });
-      }
-
-      return { career: projectRow(row) };
+  // OTA #12 — defensive alias for the historical client URL pattern. Some
+  // older client builds (and the upcoming stats consolidation) reach for
+  // `/api/stats/player/by-id/:playerId/career-rollup` to sit next to the
+  // existing `/api/stats/player/by-id/:playerId/career` (per-season). Same
+  // handler, same response shape — keeps the rollout decoupled from the
+  // client-side URL convention.
+  fastify.get<{ Params: { playerId: string } }>(
+    '/api/stats/player/by-id/:playerId/career-rollup',
+    async (req, reply) => {
+      const playerId = decodeURIComponent(req.params.playerId);
+      return handleCareerRollup(playerId, reply);
     },
   );
 }

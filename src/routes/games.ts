@@ -363,13 +363,20 @@ export async function gamesRoutes(fastify: FastifyInstance): Promise<void> {
     // (live_games is the new ingest surface from refreshGames.ts; the legacy
     //  v1 `games` table is unrelated — it powers player_game_stats and the
     //  season_player_stats materialized view.)
+    //
+    // OTA #12 fix: status='scheduled' only (was including 'inprogress',
+    // which mixes today's already-tipped games into the "upcoming" carousel
+    // and surfaces past-today rows that the cron hasn't flipped to final
+    // yet). The Home screen has a separate live-scoreboard surface for
+    // inprogress games. Also `.gt('game_date', today)` so today's games
+    // don't appear as "upcoming" once it's already 5/13.
     try {
       const { data, error } = await supabase
         .from('live_games')
         .select('id, source, sport, season, game_date, status, home_team, home_team_abbr, away_team, away_team_abbr, source_game_id')
         .eq('sport', sport)
-        .in('status', ['scheduled', 'inprogress'])
-        .gte('game_date', today)
+        .eq('status', 'scheduled')
+        .gt('game_date', today)
         .lte('game_date', horizon)
         .order('game_date', { ascending: true })
         .limit(200);
@@ -389,7 +396,7 @@ export async function gamesRoutes(fastify: FastifyInstance): Promise<void> {
           awayTeamBadge: null,
           homeScore: null,
           awayScore: null,
-          status: row.status === 'inprogress' ? 'live' : 'upcoming',
+          status: 'upcoming' as const,
           dateEvent: row.game_date as string,
           time: null,
           timeLocal: null,

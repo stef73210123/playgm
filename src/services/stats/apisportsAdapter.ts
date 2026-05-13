@@ -479,6 +479,13 @@ export class ApiSportsAdapter implements StatsAdapter {
     );
     const out: ScheduleEntry[] = [];
     for (const g of r.response ?? []) {
+      // OTA #12 — surface final scores so refreshGames can write them into
+      // `live_games` and recomputeTeamRecords can tell wins from ties.
+      // API-Sports returns `scores.home.points` / `scores.visitors.points`
+      // as numbers once the game is complete; both are null/undefined for
+      // games still scheduled or in progress, which we round-trip as null.
+      const hPts = g.scores?.home?.points;
+      const aPts = g.scores?.visitors?.points;
       out.push({
         gameId: String(g.id),
         date: g.date?.start ?? '',
@@ -487,6 +494,8 @@ export class ApiSportsAdapter implements StatsAdapter {
         homeTeamId: g.teams?.home?.id != null ? String(g.teams.home.id) : undefined,
         awayTeamId: g.teams?.visitors?.id != null ? String(g.teams.visitors.id) : undefined,
         status: g.status?.long ?? 'unknown',
+        homeScore: typeof hPts === 'number' ? hPts : null,
+        awayScore: typeof aPts === 'number' ? aPts : null,
       });
     }
     return out;

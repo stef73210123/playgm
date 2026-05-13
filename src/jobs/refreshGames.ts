@@ -293,6 +293,11 @@ async function runNbaPipeline(log?: FastifyBaseLogger, opts: { boxScores?: boole
       const homeRef = teams.find((t) => t.id === ev.homeTeamId) ?? team;
       const awayRef = teams.find((t) => t.id === ev.awayTeamId);
 
+      // OTA #12 — adapter now surfaces scores for finals; round through
+      // verbatim so recomputeTeamRecords can tally wins/losses (was
+      // tallying every final as a 0-0 tie before this).
+      const homeScore = ev.homeScore ?? null;
+      const awayScore = ev.awayScore ?? null;
       rows.push({
         id: `apisports:nba:${ev.gameId}`,
         source: 'apisports',
@@ -302,10 +307,10 @@ async function runNbaPipeline(log?: FastifyBaseLogger, opts: { boxScores?: boole
         status,
         home_team: homeRef.name,
         home_team_abbr: homeRef.abbr,
-        home_score: null,   // adapter shape doesn't surface scores; box-score pull fills these
+        home_score: homeScore,
         away_team: awayRef?.name ?? ev.awayTeam,
         away_team_abbr: awayRef?.abbr ?? ev.awayTeam,
-        away_score: null,
+        away_score: awayScore,
         source_game_id: String(ev.gameId),
       });
     }
@@ -376,14 +381,26 @@ async function recomputeTeamRecords(sport: League, log?: FastifyBaseLogger): Pro
 
   type Rec = { wins: number; losses: number; ties: number };
   const tally = new Map<string, Rec>();
+  // OTA #12 — seed every team in the league at 0-0-0 so the response always
+  // has a row, even before they've played a final. Previously only teams
+  // that appeared in a final showed up in /api/teams/:sport/records, and
+  // the others fell through to a synthesized 0-0 with computedAt=null in
+  // the per-team endpoint — which the client renders as "—".
+  for (const t of teamMap) {
+    tally.set(t.mockTeamId, { wins: 0, losses: 0, ties: 0 });
+  }
   for (const g of finals ?? []) {
     const home = abbrToMockId.get(g.home_team_abbr as string);
     const away = abbrToMockId.get(g.away_team_abbr as string);
     if (!home || !away) continue;
     if (!tally.has(home)) tally.set(home, { wins: 0, losses: 0, ties: 0 });
     if (!tally.has(away)) tally.set(away, { wins: 0, losses: 0, ties: 0 });
-    const hs = Number(g.home_score ?? 0);
-    const as = Number(g.away_score ?? 0);
+    // OTA #12 — skip games we haven't ingested scores for yet. Previously
+    // null/null compared as 0-0 and every score-less final got tallied
+    // as a tie, which both surfaces (NBA can't tie) and pollutes win_pct.
+    if (g.home_score == null || g.away_score == null) continue;
+    const hs = Number(g.home_score);
+    const as = Number(g.away_score);
     if (hs > as)      { tally.get(home)!.wins++;  tally.get(away)!.losses++; }
     else if (as > hs) { tally.get(away)!.wins++;  tally.get(home)!.losses++; }
     else              { tally.get(home)!.ties++;  tally.get(away)!.ties++; }

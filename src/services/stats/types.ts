@@ -68,6 +68,11 @@ export interface ScheduleEntry {
   homeTeamId?: string;
   awayTeamId?: string;
   status: string;
+  /** Final score for the home team, when the game has scored entries
+   *  upstream. Adapters MAY leave these undefined for scheduled / pre-game
+   *  events; refreshGames.ts maps undefined → null when upserting. */
+  homeScore?: number | null;
+  awayScore?: number | null;
 }
 
 export interface BoxScore {
