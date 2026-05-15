@@ -100,7 +100,10 @@ async function refreshPlayer(player) {
   const prev      = getLatestSnapshot(player.id);
   const diff      = diffSnapshots(prev, snapshot);
 
-  insertSnapshot(player.id, snapshot);
+  // Only persist a snapshot when something actually changed (avoids duplicate rows)
+  if (diff.length > 0) {
+    insertSnapshot(player.id, snapshot);
+  }
   return { status: 'ok', diff };
 }
 
