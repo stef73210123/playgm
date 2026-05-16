@@ -5,7 +5,7 @@
  *   1. Fetch latest player details from thesportsdb
  *   2. Fetch their most recent event/result
  *   3. Compare against the last stored snapshot (diff)
- *   4. Write a new snapshot and log the diff
+ *   4. Write a new snapshot only when something changed
  *
  * Runs standalone (`node src/jobs/morningRefresh.js`) or
  * is called by the cron scheduler in src/index.js.
@@ -23,6 +23,10 @@ const {
 // Pause between API calls to respect free-tier rate limit (~1 req/s)
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const RATE_DELAY_MS = 1100;
+
+// Cache team events within a single refresh run so players on the same
+// team don't each trigger a redundant API call.
+let teamEventsCache = null;
 
 function buildSnapshot(apiPlayer, lastEvent) {
   return {
@@ -72,8 +76,16 @@ function deriveResult(player, event) {
 
 async function fetchLatestEvent(apiPlayer) {
   if (!apiPlayer.idTeam) return null;
-  await sleep(RATE_DELAY_MS);
-  const events = await lastTeamEvents(apiPlayer.idTeam);
+
+  if (!teamEventsCache.has(apiPlayer.idTeam)) {
+    await sleep(RATE_DELAY_MS);
+    const events = await lastTeamEvents(apiPlayer.idTeam);
+    // Sort descending by date so index 0 is always the most recent event.
+    events.sort((a, b) => (b.dateEvent || '').localeCompare(a.dateEvent || ''));
+    teamEventsCache.set(apiPlayer.idTeam, events);
+  }
+
+  const events = teamEventsCache.get(apiPlayer.idTeam);
   return events.length > 0 ? events[0] : null;
 }
 
@@ -100,7 +112,13 @@ async function refreshPlayer(player) {
   const prev      = getLatestSnapshot(player.id);
   const diff      = diffSnapshots(prev, snapshot);
 
-  insertSnapshot(player.id, snapshot);
+  // Only persist a snapshot when something actually changed (or it's the
+  // first time we've seen this player). The refresh_log already records that
+  // the run happened, so we don't need a snapshot row for "no change" days.
+  if (diff.length > 0) {
+    insertSnapshot(player.id, snapshot);
+  }
+
   return { status: 'ok', diff };
 }
 
@@ -110,6 +128,9 @@ async function run() {
     console.log('No players in DB — add players with upsertPlayer() first.');
     return;
   }
+
+  // Fresh cache per run so stale results from a previous run never leak.
+  teamEventsCache = new Map();
 
   console.log(`\n=== Morning Refresh — ${new Date().toISOString()} ===`);
   console.log(`Refreshing ${players.length} player(s)…\n`);
