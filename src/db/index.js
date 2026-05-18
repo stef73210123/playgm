@@ -33,10 +33,9 @@ function migrate(db) {
       id          INTEGER PRIMARY KEY AUTOINCREMENT,
       player_id   INTEGER NOT NULL REFERENCES players(id) ON DELETE CASCADE,
       snapshot_at TEXT    NOT NULL DEFAULT (datetime('now')),
-      -- core identity fields snapshotted for diffing
       team        TEXT,
       position    TEXT,
-      -- last event result
+      status      TEXT,
       last_event_id     TEXT,
       last_event_date   TEXT,
       last_event_name   TEXT,
@@ -45,7 +44,6 @@ function migrate(db) {
       last_score_home   TEXT,
       last_score_away   TEXT,
       last_event_result TEXT,
-      -- raw json blob for any extra fields
       raw         TEXT
     );
 
@@ -59,6 +57,12 @@ function migrate(db) {
       diff_summary TEXT
     );
   `);
+
+  // Add status column when upgrading from the initial schema (before it was tracked)
+  const cols = db.prepare('PRAGMA table_info(player_stats)').all().map((c) => c.name);
+  if (!cols.includes('status')) {
+    db.exec('ALTER TABLE player_stats ADD COLUMN status TEXT');
+  }
 }
 
 module.exports = { getDb };

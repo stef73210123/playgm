@@ -3,15 +3,18 @@
  *
  * For every player in the DB:
  *   1. Fetch latest player details from thesportsdb
- *   2. Fetch their most recent event/result
+ *   2. Fetch their most recent team event/result (cached per team)
  *   3. Compare against the last stored snapshot (diff)
- *   4. Write a new snapshot and log the diff
+ *   4. Write a new snapshot only when something changed
+ *   5. Write daily diff files to DIFF_DIR
  *
  * Runs standalone (`node src/jobs/morningRefresh.js`) or
  * is called by the cron scheduler in src/index.js.
  */
 
 require('dotenv').config();
+const fs   = require('fs');
+const path = require('path');
 const { lookupPlayer, lastTeamEvents } = require('../api/sportsdb');
 const {
   getAllPlayers, upsertPlayer,
@@ -20,14 +23,18 @@ const {
   startRefreshLog, finishRefreshLog,
 } = require('../models/player');
 
-// Pause between API calls to respect free-tier rate limit (~1 req/s)
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const RATE_DELAY_MS = 1100;
+const DIFF_DIR = process.env.DIFF_DIR || './diffs';
+
+// Per-run cache: one API call per team instead of one per player
+let teamEventsCache = new Map();
 
 function buildSnapshot(apiPlayer, lastEvent) {
   return {
     team:     apiPlayer.strTeam     || null,
     position: apiPlayer.strPosition || null,
+    status:   apiPlayer.strStatus   || null,
 
     last_event_id:     lastEvent?.idEvent     || null,
     last_event_date:   lastEvent?.dateEvent   || null,
@@ -40,10 +47,10 @@ function buildSnapshot(apiPlayer, lastEvent) {
 
     raw: {
       player: {
-        strNationality: apiPlayer.strNationality,
-        strSport:       apiPlayer.strSport,
-        strStatus:      apiPlayer.strStatus,
-        dateBorn:       apiPlayer.dateBorn,
+        strNationality:   apiPlayer.strNationality,
+        strSport:         apiPlayer.strSport,
+        strStatus:        apiPlayer.strStatus,
+        dateBorn:         apiPlayer.dateBorn,
         strDescriptionEN: apiPlayer.strDescriptionEN,
       },
       event: lastEvent || null,
@@ -57,10 +64,9 @@ function deriveResult(player, event) {
   const away = parseInt(event.intAwayScore, 10);
   if (isNaN(home) || isNaN(away)) return null;
 
-  const team = player.strTeam || '';
+  const team   = player.strTeam || '';
   const isHome = event.strHomeTeam === team;
   const isAway = event.strAwayTeam === team;
-
   if (!isHome && !isAway) return null;
 
   const playerScore = isHome ? home : away;
@@ -72,8 +78,16 @@ function deriveResult(player, event) {
 
 async function fetchLatestEvent(apiPlayer) {
   if (!apiPlayer.idTeam) return null;
-  await sleep(RATE_DELAY_MS);
-  const events = await lastTeamEvents(apiPlayer.idTeam);
+
+  if (!teamEventsCache.has(apiPlayer.idTeam)) {
+    await sleep(RATE_DELAY_MS);
+    const events = await lastTeamEvents(apiPlayer.idTeam);
+    // Sort descending so events[0] is always the most recent regardless of API order
+    events.sort((a, b) => (b.dateEvent || '').localeCompare(a.dateEvent || ''));
+    teamEventsCache.set(apiPlayer.idTeam, events);
+  }
+
+  const events = teamEventsCache.get(apiPlayer.idTeam);
   return events.length > 0 ? events[0] : null;
 }
 
@@ -85,7 +99,6 @@ async function refreshPlayer(player) {
     return { status: 'not_found', diff: [] };
   }
 
-  // Keep local record up to date
   upsertPlayer({
     sportsdb_id:  apiPlayer.idPlayer,
     name:         apiPlayer.strPlayer,
@@ -100,21 +113,70 @@ async function refreshPlayer(player) {
   const prev      = getLatestSnapshot(player.id);
   const diff      = diffSnapshots(prev, snapshot);
 
-  insertSnapshot(player.id, snapshot);
+  // Only persist a new row when something actually changed — avoids daily duplicates
+  if (diff.length > 0) {
+    insertSnapshot(player.id, snapshot);
+  }
+
   return { status: 'ok', diff };
+}
+
+function writeDiffFiles(dateStr, diffSummary) {
+  fs.mkdirSync(DIFF_DIR, { recursive: true });
+
+  const changed = diffSummary.filter((e) => e.diff && e.diff.length > 0);
+
+  // JSON — machine-readable for downstream consumers
+  const json = {
+    date:         dateStr,
+    generated_at: new Date().toISOString(),
+    changes:      changed,
+  };
+  fs.writeFileSync(
+    path.join(DIFF_DIR, `${dateStr}.json`),
+    JSON.stringify(json, null, 2)
+  );
+
+  // TXT — human-readable aligned report
+  const lines = [`Morning Refresh — ${dateStr}`, ''];
+  if (changed.length === 0) {
+    lines.push('No stat changes detected today.');
+  } else {
+    lines.push('── Diff Report ─────────────────────────────');
+    changed.forEach(({ player, diff }) => {
+      lines.push('');
+      lines.push(`  ${player}`);
+      diff.forEach(({ field, from, to }) => {
+        const label = field.replace(/_/g, ' ');
+        lines.push(`    ${label.padEnd(22)} ${String(from ?? '—').padStart(10)} → ${to ?? '—'}`);
+      });
+    });
+    lines.push('');
+    lines.push('────────────────────────────────────────────');
+  }
+  fs.writeFileSync(
+    path.join(DIFF_DIR, `${dateStr}.txt`),
+    lines.join('\n') + '\n'
+  );
 }
 
 async function run() {
   const players = getAllPlayers();
   if (players.length === 0) {
-    console.log('No players in DB — add players with upsertPlayer() first.');
+    console.log('No players in DB — add players with `node src/seed.js "Player Name"` first.');
     return;
   }
 
-  console.log(`\n=== Morning Refresh — ${new Date().toISOString()} ===`);
+  const now     = new Date();
+  const dateStr = now.toISOString().slice(0, 10);
+
+  console.log(`\n=== Morning Refresh — ${now.toISOString()} ===`);
   console.log(`Refreshing ${players.length} player(s)…\n`);
 
-  const logId      = startRefreshLog();
+  // Reset team cache so stale data never leaks across cron firings
+  teamEventsCache = new Map();
+
+  const logId       = startRefreshLog();
   const diffSummary = [];
   let updated = 0;
   let failed  = 0;
@@ -156,6 +218,8 @@ async function run() {
 
   console.log(`\n=== Done — ${updated} updated, ${failed} failed ===\n`);
   printDiffReport(diffSummary);
+  writeDiffFiles(dateStr, diffSummary);
+  console.log(`Diff files written → ${DIFF_DIR}/${dateStr}.{txt,json}\n`);
 }
 
 function printDiffReport(diffSummary) {
@@ -175,7 +239,6 @@ function printDiffReport(diffSummary) {
   console.log('\n────────────────────────────────────────────\n');
 }
 
-// Allow running directly: `node src/jobs/morningRefresh.js`
 if (require.main === module) {
   run().catch((err) => {
     console.error('Refresh failed:', err);
